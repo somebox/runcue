@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "runcue"
+version = "0.1.0"
+description = "A Python library for coordinating work across rate-limited services"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["queue", "orchestration", "rate-limit", "async", "task"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "aiosqlite>=0.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+sim = [
+    "rich>=13.0",
+]
+
+[project.scripts]
+runcue-sim = "runcue_sim.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/runcue", "src/runcue_sim"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+

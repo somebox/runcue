@@ -2,10 +2,20 @@ tmp/
 .DS_Store
 .env
 .venv
-pycache
-__pycache__
+__pycache__/
+*.pyc
 build/
 dist/
 *.egg-info/
-/.ruff_cache/
+.ruff_cache/
 secrets.yaml
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

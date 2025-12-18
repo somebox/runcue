@@ -4,7 +4,7 @@
 
 > **runcue** provides the cues and coordination to run tasks many tasks at once — monitoring dependencies, rate limits, retries, and progress, so you only need to define the workloads.
 
-A Python library for coordinating work across rate-limited services, remote hosts, and external processes. Acts as an **air traffic controller** — it doesn't run the heavy computation itself, but dispatches work to external systems (AI APIs, SSH hosts, batch processors) and tracks completion.
+A Python library for coordinating work across rate-limited services, remote hosts, and external processes. Acts as an **traffic controller** — it doesn't run the heavy computation itself, but dispatches work to external systems (AI APIs, SSH hosts, batch processors) and tracks completion.
 
 ## Quick Example
 
@@ -42,7 +42,7 @@ async def process_document(doc_path):
 
 # Run and monitor
 async def main():
-    cue.start()
+    cue.start()  # Non-blocking, starts background loop
     
     work_id = await process_document("/path/to/doc.pdf")
     
@@ -51,7 +51,7 @@ async def main():
             print(f"Done: {event.result}")
             break
     
-    cue.stop()
+    await cue.stop()  # Graceful shutdown
 ```
 
 For shell commands and CPU-bound work:
@@ -146,14 +146,24 @@ A work unit is a request to perform work. It declares what it needs; the orchest
 | `task_type` | What kind of work (references a registered task) |
 | `target` | What to process (file path, record ID, URL, etc.) |
 | `params` | Task-specific parameters |
-| `requires_services` | Which rate-limited services this needs |
 | `depends_on` | IDs of work units that must complete first |
 | `timeout` | Maximum execution time (seconds) |
 | `dependency_timeout` | How long to wait for dependencies before failing |
+| `idempotency_key` | Optional key for duplicate detection |
 
 Work units don't specify priority directly. Priority is determined dynamically by the orchestrator using application-provided logic.
 
-**Idempotency**: Work units should include enough information to detect duplicates. Applications can enforce uniqueness on `(task_type, target, params_hash)` or provide an explicit `idempotency_key`.
+**Service requirements**: Work units inherit service requirements from their task type. If different service combinations are needed, define separate task types — this keeps service usage predictable and simplifies scheduling.
+
+**Idempotency**: When `idempotency_key` is provided, the library enforces uniqueness:
+
+| Existing Work State | Behavior |
+|---------------------|----------|
+| Pending or running | Return existing work ID |
+| Completed | Return existing work ID |
+| Failed | Configurable: reject or allow resubmit |
+
+Without an explicit key, applications can enforce uniqueness on `(task_type, target, params_hash)` in their own logic.
 
 ### Service
 
@@ -226,6 +236,21 @@ This keeps artifact storage, format, and staleness logic entirely within the app
 - Staleness logic varies by application (hash-based, timestamp-based, always-fresh)
 - The orchestrator shouldn't dictate storage patterns
 
+**Result passing pattern**: runcue does not pass results between tasks. Applications use conventions or params to locate outputs:
+
+```text
+# Producer stores output at predictable path
+split_pdf handler → writes to outputs/blocks/{page:03d}/source.png
+
+# Consumer receives location info via params
+extract_text params: {"page_num": 5, "source_work_id": "split_123"}
+extract_text handler → reads from outputs/blocks/005/source.png
+
+# dependency_satisfied confirms file exists before dispatch
+```
+
+The `depends_on` relationship ensures ordering; the application owns the data flow.
+
 ---
 
 ## Scheduling
@@ -267,7 +292,7 @@ Work units can declare dependencies on other work units. The orchestrator:
 
 1. Calls the application's `dependency_satisfied` callback for each dependency
 2. Holds dependent work until all dependencies return `true`
-3. Fails dependents if a prerequisite work unit fails
+3. Fails dependents immediately if a prerequisite fails or is cancelled
 4. Fails work units whose dependencies don't resolve within `dependency_timeout`
 
 ```text
@@ -278,6 +303,41 @@ Orchestrator checks:
     yes → "deploy_config" is eligible to run
     no  → "deploy_config" stays queued (until timeout)
 ```
+
+**Dependency failure modes**:
+
+| Condition | What Happens |
+|-----------|--------------|
+| Dependency fails | Dependent fails immediately, `error="prerequisite_failed"` |
+| Dependency cancelled | Dependent fails immediately, `error="prerequisite_cancelled"` |
+| Dependency times out | Dependency fails, then dependent fails as above |
+| `dependency_timeout` exceeded | Dependent fails, `error="dependency_timeout"` |
+
+The `dependency_timeout` covers waiting scenarios: dependency stuck in queue, in retry backoff, or blocked by rate limits. It's a "give up waiting" threshold separate from execution timeout.
+
+### Dynamic Work Submission
+
+Task handlers should be **pure** — they perform their work and return results, with no knowledge of orchestration. Dynamic follow-up work is submitted by the application in response to events:
+
+```text
+# WRONG: submitting inside handler
+@cue.task("split_pdf")
+async def split_pdf(work):
+    pages = do_split(work.target)
+    for page in pages:
+        await cue.submit("extract", ...)  # Don't do this
+    return {"pages": len(pages)}
+
+# RIGHT: submitting in event handler
+async for event in cue.events():
+    if event.type == "completed" and event.task_type == "split_pdf":
+        for page in range(1, event.result["pages"] + 1):
+            await cue.submit("extract_text",
+                params={"page_num": page},
+                depends_on=[event.work_id])
+```
+
+This separation keeps handlers testable and lets the application control workflow logic.
 
 ### Service Scheduling
 
@@ -318,6 +378,28 @@ If count < 30: grant access, log new request
 
 Rate limits are tracked in SQLite, so they survive restarts. After a crash, the orchestrator won't accidentally exceed limits because it can see recent history.
 
+**Service log retention**: Old entries are pruned automatically. Configurable retention (default: 24 hours):
+
+```python
+cue = runcue.Cue("./db", service_log_retention=86400)  # 24h
+```
+
+Pruning runs periodically in the background (e.g., hourly).
+
+### Multi-Service Acquisition
+
+When a task requires multiple services (e.g., both `openai` and `s3`), the broker acquires them **atomically** using ordered locking to prevent deadlock:
+
+```text
+Work needs [s3, openai] → broker acquires in sorted order: [openai, s3]
+
+If any acquisition fails:
+  1. Release all already-acquired services
+  2. Re-queue work unit for later evaluation
+```
+
+No partial holds means no deadlock. All-or-nothing acquisition keeps scheduling predictable.
+
 ### Circuit Breaker
 
 After consecutive failures to a service, the circuit "opens" and blocks requests for a cooldown period:
@@ -328,7 +410,7 @@ After consecutive failures to a service, the circuit "opens" and blocks requests
 | **Open** | Blocking all requests, waiting for cooldown |
 | **Half-open** | Cooldown expired, allowing one probe request |
 
-If the probe succeeds, the circuit closes. If it fails, the circuit reopens.
+**Probe behavior**: The probe is a real work unit — the highest-priority one waiting for that service. It counts against rate limits. If it succeeds, the circuit closes and normal flow resumes. If it fails, the circuit reopens. No synthetic test requests are used.
 
 ### Leasing for Atomic Dispatch
 
@@ -340,6 +422,10 @@ To prevent duplicate dispatch after crashes, work units use a **lease** model:
 4. On completion, lease is released and work marked complete
 
 This prevents the scenario where work is dispatched, orchestrator crashes before recording completion, and work is dispatched again on restart.
+
+**Lease duration**: Set to work unit `timeout` plus a buffer (default +60 seconds). For a task with `timeout=1800` (30 minutes), the lease expires at 1860 seconds.
+
+No heartbeat mechanism initially — handlers don't need to report liveness. Future enhancement: optional heartbeat for very long-running tasks.
 
 ### Resource Lifecycle
 
@@ -373,6 +459,28 @@ Request required services from broker
 
 Even `process_pool` and `subprocess` work is "external" from the orchestrator's perspective — it runs in a separate process or on a remote host. The orchestrator's event loop remains free for coordination.
 
+### Handler Return Values
+
+Each executor type has different expectations for what handlers return:
+
+| Executor | Handler Returns | Result Stored |
+|----------|-----------------|---------------|
+| `async` | Result dict | The dict directly |
+| `process_pool` | Result dict | The dict directly |
+| `subprocess` | Command list `[str]` | `{stdout, stderr, exit_code}` |
+
+For `subprocess`, the handler *builds* the command; runcue *runs* it and captures output:
+
+```python
+@cue.task("deploy", services=["ssh_prod"], executor="subprocess")
+def deploy_config(work):
+    # Handler returns the command to execute
+    return ["ssh", work.params["host"], "sudo systemctl reload nginx"]
+
+# runcue runs the command and stores:
+# {"stdout": "...", "stderr": "...", "exit_code": 0}
+```
+
 ### Process Pool Communication
 
 For `process_pool` executors, the orchestrator communicates with workers via:
@@ -402,6 +510,30 @@ Every work unit has a timeout. If exceeded:
 | Permanent (invalid input, auth) | Mark failed, don't retry |
 
 Work units that exhaust all retry attempts can optionally move to a **dead letter queue** for manual inspection.
+
+### Cancellation
+
+Applications can cancel work explicitly:
+
+```python
+await cue.cancel(work_id)                # Cancel single work unit
+await cue.cancel(work_id, cascade=True)  # Cancel + all dependents
+```
+
+**Cancellation behavior**:
+
+| Work State | What Happens |
+|------------|--------------|
+| Queued | Marked `cancelled` immediately |
+| Running | Signaled to stop; handler can check `work.cancelled` |
+| Completed/Failed | No change (already finished) |
+
+**Dependent handling**:
+
+- Without `cascade`: dependents fail with `error="prerequisite_cancelled"`
+- With `cascade`: dependents are also marked `cancelled`
+
+Cancelled work emits `work_cancelled` event.
 
 ---
 
@@ -496,11 +628,20 @@ The orchestrator emits events that applications can forward to UIs:
 | `work_completed` | Work unit finished successfully |
 | `work_failed` | Work unit failed (includes retry info) |
 | `work_retrying` | Work unit scheduled for retry |
+| `work_cancelled` | Work unit was cancelled |
 | `queue_status` | Periodic summary of queue state |
 | `service_status` | Service availability changed |
 | `backpressure_active` | Queue approaching limit |
 
-Events are throttled (configurable, default 1/second) to prevent overwhelming clients.
+**Event throttling**:
+
+| Event Type | Throttling |
+|------------|------------|
+| Progress updates | Throttled to 1/sec per work unit |
+| `work_completed`, `work_failed`, `work_retrying`, `work_cancelled` | Never throttled (always delivered) |
+| `queue_status` | Periodic (configurable interval) |
+
+Important events are never dropped. Throttling only affects high-frequency progress updates.
 
 ### Integration Options
 
@@ -532,6 +673,14 @@ If callback times out or raises:
   - Work unit receives default priority (0.5)
   - Error logged, callback_errors metric incremented
 ```
+
+**Scaling**: The priority callback is not invoked for all queued work units. The orchestrator pre-filters before scoring:
+
+1. Filter to work units whose dependencies are satisfied
+2. Filter to work units whose services have capacity
+3. Score only the filtered set
+
+With 10,000 queued items but only 5 `openai` slots available, we might score only ~100 candidates waiting for `openai`, not all 10,000. Scores are cached briefly (e.g., 100ms) if the callback is expensive.
 
 ### Dependency Callback
 
@@ -610,6 +759,18 @@ For each kind of work, specify:
 - SSE/WebSocket endpoint for progress events
 - Startup/shutdown hooks for orchestrator lifecycle
 
+### Orchestrator Lifecycle
+
+```python
+cue.start()        # Non-blocking, starts orchestrator loop as background asyncio task
+await cue.submit(...)  # Works immediately because orchestrator is running
+# ...
+await cue.stop()   # Graceful shutdown: finishes running work, persists queue
+```
+
+- `start()` returns immediately; the scheduling loop runs in background tasks
+- `stop()` is async; it waits for currently running work to complete before returning
+
 ### Minimal Integration Flow
 
 ```text
@@ -619,7 +780,7 @@ Application startup:
   3. Register task types with handlers
   4. Set priority callback (or use default)
   5. Set dependency callback (or use default)
-  6. Start orchestrator
+  6. Call cue.start() — returns immediately
 
 Handling a request:
   1. Create work unit describing what to do
@@ -635,7 +796,7 @@ Orchestrator loop (automatic):
   6. On failure: release lease, schedule retry or mark failed
 
 Application shutdown:
-  1. Stop orchestrator (finishes current work, persists queue)
+  1. await cue.stop() — waits for running work, then persists queue
 ```
 
 ---
