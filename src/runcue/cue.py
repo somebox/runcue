@@ -648,6 +648,9 @@ class Cue:
         work.completed_at = time.time()
         self._completed[work.id] = work
         
+        # Skipped work counts as progress (work was processed, just didn't need to run)
+        self._record_progress()
+        
         # Emit on_skip callback
         if self._on_skip_callback:
             try:
