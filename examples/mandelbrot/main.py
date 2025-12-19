@@ -342,7 +342,7 @@ def run_fractal(config: FractalConfig):
     
     # --- Run ---
     async def run():
-        print(f"\n🌀 Mandelbrot Fractal Generator")
+        print("\n🌀 Mandelbrot Fractal Generator")
         print(f"   Size: {config.size}×{config.size}, Iterations: {config.iterations}")
         print(f"   Grid: {config.grid}×{config.grid} ({total_tiles} tiles), Workers: {config.workers}")
         print(f"   Region: x=[{config.x_min:.4f}, {config.x_max:.4f}], y=[{config.y_min:.4f}, {config.y_max:.4f}]")

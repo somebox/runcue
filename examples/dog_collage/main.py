@@ -48,7 +48,7 @@ def main():
         
         # Keep trying until we get an image (not video/gif)
         max_attempts = 10
-        for attempt in range(max_attempts):
+        for _attempt in range(max_attempts):
             async with httpx.AsyncClient() as client:
                 resp = await client.get("https://random.dog/woof.json", timeout=10)
                 resp.raise_for_status()
@@ -211,7 +211,7 @@ def main():
 
     # --- Run ---
     async def run():
-        print(f"\n🐕 Dog Collage Generator")
+        print("\n🐕 Dog Collage Generator")
         print(f"   Fetching {TOTAL_IMAGES} random dog images...\n")
         
         # Clean previous run

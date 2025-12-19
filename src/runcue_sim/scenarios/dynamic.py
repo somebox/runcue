@@ -48,7 +48,7 @@ class DynamicScenario(Scenario):
             description="Dynamic dependencies with rebuild cycles",
         )
     
-    def setup(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    def setup(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Configure api, local, publisher, and checker services."""
         from runcue_sim.display import ServiceStatus
         
@@ -282,7 +282,7 @@ class DynamicScenario(Scenario):
                 svc.total_failed += 1
             state.add_event("failed", work.id, work.task, str(error)[:40])
     
-    async def submit_workload(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    async def submit_workload(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Submit initial work: API tasks, local tasks, and publish jobs.
         
         Creates a dependency graph where:

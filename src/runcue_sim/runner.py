@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import runcue
 
@@ -54,7 +55,7 @@ class SimulationRunner:
     def __init__(
         self,
         config: SimConfig,
-        state: "SimulationState",
+        state: SimulationState,
         on_event: Callable[[str, str, str | None, str], None] | None = None,
     ):
         self.config = config
@@ -62,7 +63,7 @@ class SimulationRunner:
         self.on_event = on_event or state.add_event
         
         self._cue: runcue.Cue | None = None
-        self._scenario: "Scenario" | None = None
+        self._scenario: Scenario | None = None
         self._running = False
     
     async def run(self) -> None:
@@ -144,6 +145,6 @@ class SimulationRunner:
         return self._cue.debug_blocked()
     
     @property
-    def cue(self) -> "runcue.Cue | None":
+    def cue(self) -> runcue.Cue | None:
         """Access to underlying Cue instance for debugging."""
         return self._cue

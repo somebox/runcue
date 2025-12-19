@@ -38,7 +38,7 @@ class Scenario(ABC):
         ...
     
     @abstractmethod
-    def setup(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    def setup(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Configure services, tasks, and callbacks on the Cue instance.
         
         Args:
@@ -49,7 +49,7 @@ class Scenario(ABC):
         ...
     
     @abstractmethod
-    async def submit_workload(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    async def submit_workload(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Submit the initial workload.
         
         Args:
@@ -60,11 +60,11 @@ class Scenario(ABC):
         ...
 
 
-# Import built-in scenarios
-from runcue_sim.scenarios.single_queue import SingleQueueScenario
-from runcue_sim.scenarios.fanout import FanoutScenario
-from runcue_sim.scenarios.pipeline import PipelineScenario
-from runcue_sim.scenarios.dynamic import DynamicScenario
+# Import built-in scenarios (must come after Scenario class definition)
+from runcue_sim.scenarios.dynamic import DynamicScenario  # noqa: E402
+from runcue_sim.scenarios.fanout import FanoutScenario  # noqa: E402
+from runcue_sim.scenarios.pipeline import PipelineScenario  # noqa: E402
+from runcue_sim.scenarios.single_queue import SingleQueueScenario  # noqa: E402
 
 # Registry of built-in scenarios
 SCENARIOS: dict[str, type[Scenario]] = {

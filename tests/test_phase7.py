@@ -3,10 +3,8 @@
 import asyncio
 import time
 
-import pytest
-
 import runcue
-from runcue.models import PriorityContext, WorkState
+from runcue.models import PriorityContext
 
 
 class TestPriorityOrdering:

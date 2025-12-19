@@ -33,7 +33,7 @@ class SingleQueueScenario(Scenario):
             description="Single service, independent tasks (default)",
         )
     
-    def setup(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    def setup(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Configure a single service and task."""
         from runcue_sim.display import ServiceStatus
         
@@ -134,7 +134,7 @@ class SingleQueueScenario(Scenario):
                 svc.total_failed += 1
             state.add_event("failed", work.id, "work", str(error))
     
-    async def submit_workload(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    async def submit_workload(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Submit independent work items."""
         for i in range(config.count):
             await cue.submit("work", params={"item": f"item_{i:04d}", "index": i})

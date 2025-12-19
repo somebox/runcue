@@ -165,7 +165,7 @@ class SimulatorDisplay:
         self.console = console or Console()
         self._live: Live | None = None
     
-    def __enter__(self) -> "SimulatorDisplay":
+    def __enter__(self) -> SimulatorDisplay:
         self._live = Live(
             self._build_layout(),
             console=self.console,
@@ -400,7 +400,7 @@ class SimulatorDisplay:
         if s.latency_jitter > 0:
             text.append(f" ±{s.latency_jitter*100:.0f}%", style="dim")
         if s.outlier_chance > 0:
-            text.append(f"  Outliers: ", style="dim")
+            text.append("  Outliers: ", style="dim")
             text.append(f"{s.outlier_chance*100:.0f}%", style="bold yellow")
         text.append("  Error: ", style="dim")
         text.append(f"{s.error_rate*100:.0f}%", style="bold red" if s.error_rate > 0 else "bold")

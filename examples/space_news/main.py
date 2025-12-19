@@ -19,7 +19,6 @@ Demonstrates:
 
 import asyncio
 import json
-import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -199,7 +198,7 @@ def main():
                 try:
                     dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
                     md.append(f"**Published:** {dt.strftime('%B %d, %Y')}")
-                except:
+                except ValueError:
                     pass
             md.append("")
             
@@ -223,7 +222,7 @@ def main():
                 try:
                     dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                     date_str = dt.strftime("%b %d, %Y %H:%M UTC")
-                except:
+                except ValueError:
                     pass
             
             summary = launch.get("summary", "Unknown")
@@ -265,9 +264,8 @@ def main():
             # Need all thumbnails
             articles = json.loads((OUTPUT_DIR / "articles.json").read_text())
             for i, article in enumerate(articles):
-                if article.get("image_url"):
-                    if not (OUTPUT_DIR / f"thumb_{i}.jpg").exists():
-                        return False
+                if article.get("image_url") and not (OUTPUT_DIR / f"thumb_{i}.jpg").exists():
+                    return False
             return True
         
         return True
@@ -364,7 +362,7 @@ def parse_ics(content: str) -> list[dict]:
                         current["date"] = dt.isoformat() + "Z"
                     else:
                         current["date"] = value
-                except:
+                except ValueError:
                     current["date"] = value
             elif key == "LOCATION":
                 current["location"] = value.split("|")[0].strip()
@@ -379,7 +377,7 @@ def parse_ics(content: str) -> list[dict]:
                 dt = datetime.fromisoformat(d.replace("Z", "+00:00"))
                 # Make naive for comparison
                 return dt.replace(tzinfo=None)
-            except:
+            except ValueError:
                 pass
         return datetime(9999, 12, 31)
     

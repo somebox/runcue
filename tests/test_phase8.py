@@ -5,7 +5,6 @@ import asyncio
 import pytest
 
 import runcue
-from runcue.models import WorkState
 
 
 class TestFullPipelineIntegration:

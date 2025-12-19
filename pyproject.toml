@@ -50,5 +50,10 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "SIM105", # Use contextlib.suppress - try-except-pass is clearer for adding logging
+    "SIM103", # Return condition directly - explicit if/return is often clearer
+    "SIM110", # Use all() - for loop is clearer when debugging
+]
 

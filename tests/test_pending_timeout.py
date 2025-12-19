@@ -1,7 +1,9 @@
 """Tests for pending_timeout feature."""
 
 import asyncio
+
 import pytest
+
 import runcue
 
 

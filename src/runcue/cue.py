@@ -6,7 +6,8 @@ import asyncio
 import inspect
 import time
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from runcue.models import PriorityContext, TaskType, WorkState, WorkUnit
 
@@ -550,7 +551,9 @@ class Cue:
     def _check_stall(self) -> None:
         """Check for system stall (no progress while work is pending)."""
         if not self._queue:
-            return  # No pending work, can't be stalled
+            # No pending work, can't be stalled - reset warning flag for next stall
+            self._stall_warned = False
+            return
         
         now = time.time()
         seconds_since_progress = now - self._last_progress_at

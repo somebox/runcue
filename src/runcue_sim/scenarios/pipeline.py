@@ -42,7 +42,7 @@ class PipelineScenario(Scenario):
             description="Extract → Transform → Load chain",
         )
     
-    def setup(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    def setup(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Configure extract, transform, and load services."""
         from runcue_sim.display import ServiceStatus
         
@@ -189,7 +189,7 @@ class PipelineScenario(Scenario):
                 svc.total_failed += 1
             state.add_event("failed", work.id, work.task, str(error))
     
-    async def submit_workload(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    async def submit_workload(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Submit initial extract jobs.
         
         Each item will flow: extract → transform → load.

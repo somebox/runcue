@@ -42,7 +42,7 @@ class FanoutScenario(Scenario):
             description="Split → process in parallel → aggregate",
         )
     
-    def setup(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    def setup(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Configure splitter, processor, and aggregator services."""
         from runcue_sim.display import ServiceStatus
         
@@ -191,7 +191,7 @@ class FanoutScenario(Scenario):
                 svc.total_failed += 1
             state.add_event("failed", work.id, work.task, str(error))
     
-    async def submit_workload(self, cue: "runcue.Cue", config: "SimConfig", state: "SimulationState") -> None:
+    async def submit_workload(self, cue: runcue.Cue, config: SimConfig, state: SimulationState) -> None:
         """Submit initial split jobs.
         
         Each split job will fan out into process jobs.

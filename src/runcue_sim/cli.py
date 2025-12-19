@@ -80,7 +80,7 @@ async def run_with_display(config: SimConfig, use_tui: bool = True, verbose: boo
     
     if verbose:
         # Verbose log mode - print header then let events stream
-        print(f"\n🚀 runcue-sim [verbose]")
+        print("\n🚀 runcue-sim [verbose]")
         print(f"   Scenario: {config.scenario}, Count: {config.count}")
         print(f"   Latency: {config.latency_ms}ms ±{int(config.latency_jitter*100)}%, Error: {config.error_rate * 100:.0f}%")
         print()
@@ -148,7 +148,7 @@ async def run_with_display(config: SimConfig, use_tui: bool = True, verbose: boo
         print_final_summary(state)
     else:
         # Simple text display
-        print(f"\n🚀 runcue-sim")
+        print("\n🚀 runcue-sim")
         print(f"   Count: {config.count}, Latency: {config.latency_ms}ms, Error: {config.error_rate * 100:.0f}%")
         print()
         
@@ -230,7 +230,7 @@ def print_final_summary(state: SimulationState) -> None:
         
         console.print(table)
     else:
-        print(f"\n📈 Results:")
+        print("\n📈 Results:")
         print(f"   Submitted:  {state.submitted}")
         print(f"   Completed:  {state.completed}")
         print(f"   Failed:     {state.failed}")

@@ -3,8 +3,6 @@
 import asyncio
 import time
 
-import pytest
-
 import runcue
 from runcue.models import WorkState
 
