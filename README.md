@@ -427,7 +427,15 @@ def is_stale(work):
 ## API Overview
 
 ```python
-cue = runcue.Cue()
+cue = runcue.Cue(
+    # For simple pipelines - timeout individual work items:
+    pending_warn_after=30,  # Optional: warn about work pending > 30s
+    pending_timeout=300,    # Optional: auto-fail work pending > 5 min
+    
+    # For batch jobs - timeout on system stall:
+    stall_warn_after=30,    # Optional: warn if no progress for 30s
+    stall_timeout=60,       # Optional: fail all if stalled > 60s
+)
 
 # Services
 cue.service("name", rate="N/min", concurrent=M)
@@ -579,6 +587,48 @@ Reasons work might be blocked:
 - **not_ready**: `is_ready` returned `False` - check if input artifacts exist
 - **service_full**: Service at capacity - wait or increase limits
 - **unknown_task**: Task handler not registered
+
+### Preventing Infinite Hangs
+
+There are two timeout strategies depending on your use case:
+
+**1. Pending Timeout** - for simple pipelines where individual work shouldn't wait long:
+
+```python
+# Fail any work pending > 5 minutes
+cue = runcue.Cue(pending_warn_after=30, pending_timeout=300)
+```
+
+**2. Stall Timeout** - for batch jobs where work legitimately queues while earlier work runs:
+
+```python
+# Only fail if the SYSTEM stops making progress for 60s
+cue = runcue.Cue(stall_warn_after=30, stall_timeout=60)
+```
+
+The key difference:
+- `pending_timeout` fails work based on how long it's been **queued**
+- `stall_timeout` fails work based on how long since **any work completed**
+
+For batch processing (like the mandelbrot example), use `stall_timeout` - work legitimately waits in queue while earlier tiles compute.
+
+```python
+@cue.on_failure
+def on_failure(work, error):
+    if isinstance(error, TimeoutError):
+        print(f"Work {work.task} timed out")
+
+# Optional: custom stall warning (default prints to stderr)
+@cue.on_stall_warning
+def on_stall_warning(seconds_since_progress, pending_count):
+    print(f"⚠ No progress for {seconds_since_progress:.0f}s, {pending_count} pending")
+```
+
+Both strategies catch:
+- Upstream task failures leaving downstream tasks blocked
+- `is_ready` that will never return `True`
+- External changes invalidating queue state
+- Bugs in dependency logic
 
 ### Testing with runcue-sim
 

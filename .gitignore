@@ -19,3 +19,6 @@ secrets.yaml
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Example outputs
+examples/*/output/

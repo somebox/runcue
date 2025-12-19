@@ -36,7 +36,43 @@ class Cue:
         await cue.stop()
     """
     
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        pending_timeout: float | None = None,
+        pending_warn_after: float | None = None,
+        stall_timeout: float | None = None,
+        stall_warn_after: float | None = None,
+    ) -> None:
+        """
+        Initialize the Cue orchestrator.
+        
+        Args:
+            pending_timeout: Auto-fail work pending longer than this (seconds).
+                            Use for simple pipelines where work shouldn't wait long.
+                            None means no timeout (default).
+            pending_warn_after: Emit warning for work pending longer than this (seconds).
+                               None means no warning (default).
+            stall_timeout: Auto-fail ALL pending work if no progress for this long (seconds).
+                          "Progress" = any work starting, completing, or failing.
+                          Better than pending_timeout for batch jobs with deep queues.
+                          None means no stall detection (default).
+            stall_warn_after: Emit warning if no progress for this long (seconds).
+                             None means no warning (default).
+        
+        Example:
+            # For API pipelines: fail individual work pending > 5 min
+            cue = runcue.Cue(pending_timeout=300)
+            
+            # For batch jobs: fail if system stalls for > 60s
+            cue = runcue.Cue(stall_warn_after=30, stall_timeout=60)
+        """
+        # Configuration
+        self._pending_timeout = pending_timeout
+        self._pending_warn_after = pending_warn_after
+        self._stall_timeout = stall_timeout
+        self._stall_warn_after = stall_warn_after
+        
         # Task and service definitions
         self._tasks: dict[str, TaskType] = {}
         self._services: dict[str, dict] = {}
@@ -49,6 +85,15 @@ class Cue:
         self._on_failure_callback: Callable | None = None
         self._on_skip_callback: Callable | None = None
         self._on_start_callback: Callable | None = None
+        self._on_pending_warning_callback: Callable | None = None
+        self._on_stall_warning_callback: Callable | None = None
+        
+        # Track which work has been warned about (to avoid spam)
+        self._warned_work: set[str] = set()
+        
+        # Track progress for stall detection
+        self._last_progress_at: float = 0.0  # Set when orchestrator starts
+        self._stall_warned: bool = False  # Only warn once per stall
         
         # In-memory work storage
         self._queue: list[WorkUnit] = []              # Pending work
@@ -273,6 +318,39 @@ class Cue:
         self._on_start_callback = func
         return func
     
+    def on_pending_warning(self, func):
+        """
+        Decorator to register pending warning callback.
+        
+        Called when work has been pending longer than pending_warn_after seconds.
+        If not set and pending_warn_after is configured, a default warning is
+        printed to stderr.
+        
+        Example:
+            @cue.on_pending_warning
+            def on_pending_warning(work, pending_seconds):
+                logging.warning(f"{work.task} stuck for {pending_seconds:.1f}s")
+        """
+        self._on_pending_warning_callback = func
+        return func
+    
+    def on_stall_warning(self, func):
+        """
+        Decorator to register stall warning callback.
+        
+        Called when no progress has been made for stall_warn_after seconds.
+        "Progress" means any work starting, completing, or failing.
+        If not set and stall_warn_after is configured, a default warning is
+        printed to stderr.
+        
+        Example:
+            @cue.on_stall_warning
+            def on_stall_warning(seconds_since_progress, pending_count):
+                logging.warning(f"No progress for {seconds_since_progress:.0f}s, {pending_count} pending")
+        """
+        self._on_stall_warning_callback = func
+        return func
+    
     # --- Lifecycle ---
     
     def start(self) -> None:
@@ -285,6 +363,8 @@ class Cue:
             return
         
         self._running = True
+        self._last_progress_at = time.time()  # Initialize progress tracking
+        self._stall_warned = False
         # Get the current event loop and create the orchestrator task
         loop = asyncio.get_event_loop()
         self._orchestrator_task = loop.create_task(self._run_orchestrator())
@@ -335,6 +415,14 @@ class Cue:
     async def _run_orchestrator(self) -> None:
         """Background loop that dispatches pending work."""
         while self._running:
+            # Check for warnings and timed-out pending work
+            if self._pending_timeout is not None or self._pending_warn_after is not None:
+                self._check_pending_timeouts()
+            
+            # Check for system stall (no progress while work pending)
+            if self._stall_timeout is not None or self._stall_warn_after is not None:
+                self._check_stall()
+            
             # Collect work to dispatch (can't modify queue while iterating)
             to_dispatch = []
             remaining = []
@@ -387,6 +475,7 @@ class Cue:
                 work.state = WorkState.RUNNING
                 work.started_at = time.time()
                 self._active[work.id] = work
+                self._record_progress()  # Work starting = progress
                 
                 # Create task to execute work
                 task = asyncio.create_task(self._execute_work(work))
@@ -394,6 +483,120 @@ class Cue:
             
             # Small sleep to avoid busy loop
             await asyncio.sleep(0.01)
+    
+    def _check_pending_timeouts(self) -> None:
+        """Check for warnings and timeouts on pending work."""
+        now = time.time()
+        timed_out = []
+        remaining = []
+        
+        for work in self._queue:
+            pending_time = now - work.created_at
+            
+            # Check for timeout first
+            if self._pending_timeout is not None and pending_time > self._pending_timeout:
+                timed_out.append((work, pending_time))
+                continue
+            
+            # Check for warning (only once per work item)
+            if (self._pending_warn_after is not None 
+                and pending_time > self._pending_warn_after 
+                and work.id not in self._warned_work):
+                self._warned_work.add(work.id)
+                self._emit_pending_warning(work, pending_time)
+            
+            remaining.append(work)
+        
+        # Update queue
+        self._queue = remaining
+        
+        # Fail timed-out work
+        for work, pending_time in timed_out:
+            work.state = WorkState.FAILED
+            work.completed_at = now
+            work.error = f"Pending timeout: waited {pending_time:.1f}s (limit: {self._pending_timeout}s)"
+            self._completed[work.id] = work
+            
+            # Emit failure callback
+            if self._on_failure_callback:
+                try:
+                    error = TimeoutError(work.error)
+                    self._on_failure_callback(work, error)
+                except Exception:
+                    pass  # Don't let callback errors disrupt orchestrator
+    
+    def _emit_pending_warning(self, work: WorkUnit, pending_time: float) -> None:
+        """Emit a warning for work that has been pending too long."""
+        if self._on_pending_warning_callback:
+            try:
+                self._on_pending_warning_callback(work, pending_time)
+            except Exception:
+                pass  # Don't let callback errors disrupt orchestrator
+        else:
+            # Default: print to stderr
+            import sys
+            print(
+                f"⚠ Warning: {work.task}[{work.id}] pending for {pending_time:.1f}s "
+                f"(threshold: {self._pending_warn_after}s)",
+                file=sys.stderr,
+                flush=True,
+            )
+    
+    def _record_progress(self) -> None:
+        """Record that progress was made (work started, completed, or failed)."""
+        self._last_progress_at = time.time()
+        self._stall_warned = False  # Reset stall warning on progress
+    
+    def _check_stall(self) -> None:
+        """Check for system stall (no progress while work is pending)."""
+        if not self._queue:
+            return  # No pending work, can't be stalled
+        
+        now = time.time()
+        seconds_since_progress = now - self._last_progress_at
+        pending_count = len(self._queue)
+        
+        # Check for stall timeout first
+        if self._stall_timeout is not None and seconds_since_progress > self._stall_timeout:
+            # Fail all pending work
+            for work in self._queue:
+                work.state = WorkState.FAILED
+                work.completed_at = now
+                work.error = f"Stall timeout: no progress for {seconds_since_progress:.1f}s (limit: {self._stall_timeout}s)"
+                self._completed[work.id] = work
+                
+                if self._on_failure_callback:
+                    try:
+                        error = TimeoutError(work.error)
+                        self._on_failure_callback(work, error)
+                    except Exception:
+                        pass
+            
+            self._queue = []
+            return
+        
+        # Check for stall warning (only once per stall)
+        if (self._stall_warn_after is not None 
+            and seconds_since_progress > self._stall_warn_after 
+            and not self._stall_warned):
+            self._stall_warned = True
+            self._emit_stall_warning(seconds_since_progress, pending_count)
+    
+    def _emit_stall_warning(self, seconds_since_progress: float, pending_count: int) -> None:
+        """Emit a warning that the system appears stalled."""
+        if self._on_stall_warning_callback:
+            try:
+                self._on_stall_warning_callback(seconds_since_progress, pending_count)
+            except Exception:
+                pass
+        else:
+            import sys
+            print(
+                f"⚠ Stall warning: no progress for {seconds_since_progress:.1f}s "
+                f"({pending_count} work items pending)",
+                file=sys.stderr,
+                flush=True,
+            )
     
     def _check_is_ready(self, work: WorkUnit) -> bool:
         """Check if work is ready to run. Returns True if no callback registered."""
@@ -511,7 +714,9 @@ class Cue:
             if inspect.iscoroutinefunction(handler):
                 result = await handler(work)
             else:
-                result = handler(work)
+                # Run sync handlers in thread pool to avoid blocking event loop
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, handler, work)
             
             # Success
             duration = time.time() - start_time
@@ -548,6 +753,8 @@ class Cue:
             # Release service slot
             if service_name and service_name in self._service_active:
                 self._service_active[service_name].discard(work.id)
+            # Record progress (work finished = progress, whether success or failure)
+            self._record_progress()
     
     # --- Work Operations ---
     
