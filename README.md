@@ -465,6 +465,165 @@ cue.start()        # Start background scheduling
 await cue.stop()   # Graceful shutdown
 ```
 
+## Debugging
+
+### Common Pitfalls
+
+**1. Waiting for artifacts that will never exist**
+
+If `is_ready` waits for an artifact that no task produces, work blocks forever:
+
+```python
+# BAD: summarize waits for "analysis.json" but nothing creates it
+@cue.is_ready
+def is_ready(work):
+    if work.task == "summarize":
+        return Path("analysis.json").exists()  # Who creates this?
+    return True
+
+# GOOD: Make sure some task actually produces the artifact
+@cue.task("analyze")
+def analyze(work):
+    result = do_analysis(work.params["input"])
+    Path("analysis.json").write_text(json.dumps(result))  # Creates the artifact
+    return result
+
+@cue.is_ready
+def is_ready(work):
+    if work.task == "summarize":
+        return Path("analysis.json").exists()  # Now "analyze" creates this
+    return True
+```
+
+**2. Circular dependencies**
+
+```python
+# BAD: A waits for B, B waits for A → deadlock
+@cue.is_ready
+def is_ready(work):
+    if work.task == "task_a":
+        return Path("b_output.txt").exists()  # A needs B's output
+    if work.task == "task_b":
+        return Path("a_output.txt").exists()  # B needs A's output
+    return True
+```
+
+**3. Stale downstream artifacts**
+
+When you re-run an upstream task, downstream artifacts may contain outdated data:
+
+```python
+# Scenario: extract → transform → load
+# If you re-run "extract", the "transform" output is now stale
+
+# Solution: Check input freshness in is_stale
+@cue.is_stale
+def is_stale(work):
+    if work.task == "transform":
+        input_path = work.params["input"]
+        output_path = work.params["output"]
+        
+        if not Path(output_path).exists():
+            return True
+        
+        # Re-run if input is newer than output
+        input_mtime = Path(input_path).stat().st_mtime
+        output_mtime = Path(output_path).stat().st_mtime
+        return input_mtime > output_mtime
+    
+    return True
+```
+
+**4. Side effects without proof**
+
+Tasks that send emails, charge cards, or call external APIs need proof artifacts:
+
+```python
+# BAD: No proof that email was sent - might send twice on restart
+@cue.task("send_email")
+def send_email(work):
+    email_api.send(to=work.params["to"], body=work.params["body"])
+    return {"sent": True}
+
+# GOOD: Record the send, check before sending
+@cue.task("send_email")
+def send_email(work):
+    order_id = work.params["order_id"]
+    
+    # Check if already sent
+    existing = db.get_email_record(order_id)
+    if existing:
+        return existing
+    
+    # Send and record
+    email_api.send(to=work.params["to"], body=work.params["body"])
+    record = {"order_id": order_id, "sent_at": time.time()}
+    db.save_email_record(record)
+    return record
+```
+
+### Diagnosing Stalled Work
+
+When work appears stuck, use `debug_blocked()` to understand why:
+
+```python
+# Check what's blocking
+for item in cue.debug_blocked():
+    work = item["work"]
+    reason = item["reason"]    # 'not_ready', 'service_full', 'unknown_task'
+    details = item["details"]
+    print(f"{work.task}: {reason} - {details}")
+```
+
+Reasons work might be blocked:
+- **not_ready**: `is_ready` returned `False` - check if input artifacts exist
+- **service_full**: Service at capacity - wait or increase limits
+- **unknown_task**: Task handler not registered
+
+### Testing with runcue-sim
+
+The simulator (`runcue-sim`) helps test your dependency patterns without real services:
+
+```bash
+# Basic simulation
+runcue-sim --scenario single_queue --count 100
+
+# Test with errors and latency
+runcue-sim --scenario pipeline --count 50 --latency 200 --error-rate 0.1
+
+# Verbose event log for debugging
+runcue-sim --scenario dynamic --count 10 -v
+
+# List available scenarios
+runcue-sim --list-scenarios
+```
+
+**Built-in scenarios:**
+
+| Scenario | Description |
+|----------|-------------|
+| `single_queue` | Independent tasks, one service |
+| `pipeline` | Extract → Transform → Load chain |
+| `fanout` | Split → parallel process → aggregate |
+| `dynamic` | Complex dependencies with rebuild cycles |
+
+**Verbose mode** shows every event:
+
+```
+TIME           EVENT        TASK             WORK_ID              DETAILS
+--------------------------------------------------------------------------------
+20:55:11.216 + queued       [api_fetch]      api_api_006          api_006
+20:55:11.241 ✓ completed    [api_fetch]      24adb191b9b2         24ms
+20:55:11.308 ⟳ invalidated  [api_fetch]      api_006              checker
+```
+
+When the simulator detects a stall (nothing completing, work still queued), it automatically shows what's blocked:
+
+```
+⚠️  Stall detected! 15 work items blocked:
+    local_process: not_ready - is_ready returned False for...
+```
+
 ## Why This Design?
 
 **Traditional task queues:** "Task B depends on Task A completing."

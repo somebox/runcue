@@ -102,6 +102,7 @@ async def run_with_display(config: SimConfig, use_tui: bool = True, verbose: boo
         display = SimulatorDisplay(state)
         stall_counter = 0
         last_completed = 0
+        stall_timeout_ticks = int(config.stall_timeout * 10) if config.stall_timeout else None
         
         async def update_loop():
             """Background task to refresh display and detect stalls."""
@@ -113,6 +114,11 @@ async def run_with_display(config: SimConfig, use_tui: bool = True, verbose: boo
                     # After ~2 seconds of stall, check for blocked work
                     if stall_counter > 20:
                         state.blocked_info = runner.debug_blocked()
+                    # Check stall timeout
+                    if stall_timeout_ticks and stall_counter >= stall_timeout_ticks:
+                        state.add_event("timeout", "system", None, f"Stalled for {config.stall_timeout}s")
+                        runner.stop()
+                        return
                 else:
                     stall_counter = 0
                     state.blocked_info = []
@@ -148,6 +154,7 @@ async def run_with_display(config: SimConfig, use_tui: bool = True, verbose: boo
         
         stall_counter = 0
         last_completed = 0
+        stall_timeout_ticks = int(config.stall_timeout * 2) if config.stall_timeout else None  # 0.5s per tick
         
         async def update_loop():
             """Print progress periodically and detect stalls."""
@@ -171,7 +178,12 @@ async def run_with_display(config: SimConfig, use_tui: bool = True, verbose: boo
                             if len(blocked) > 5:
                                 print(f"    ... and {len(blocked) - 5} more")
                             print()
-                            stall_counter = 0  # Reset to avoid spam
+                            stall_counter = 4  # Reset partially to show again after interval
+                    # Check stall timeout
+                    if stall_timeout_ticks and stall_counter >= stall_timeout_ticks:
+                        print(f"\n⏱️  Timeout: Stalled for {config.stall_timeout}s. Stopping.")
+                        runner.stop()
+                        return
                 else:
                     stall_counter = 0
                 last_completed = state.completed
@@ -329,6 +341,18 @@ Examples:
         action="store_true",
         help="Print event log instead of status updates (no-tui)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible behavior (default: random)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Auto-stop if stalled for N seconds (default: none)",
+    )
     
     args = parser.parse_args()
     
@@ -343,6 +367,13 @@ Examples:
     
     # Configure logging early
     configure_logging(verbose=args.verbose)
+    
+    # Set random seed for reproducibility
+    if args.seed is not None:
+        import random
+        random.seed(args.seed)
+        if args.verbose:
+            print(f"Random seed: {args.seed}")
     
     # Parse rate limit
     rate_limit = None
@@ -374,6 +405,7 @@ Examples:
         rate_limit=rate_limit,
         submit_rate=args.submit_rate,
         scenario=args.scenario,
+        stall_timeout=args.timeout,
     )
     
     # Run with proper interrupt handling

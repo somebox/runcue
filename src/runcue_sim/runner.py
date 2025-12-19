@@ -33,6 +33,7 @@ class SimConfig:
     rate_limit: tuple[int, int] | None = None  # (count, seconds)
     submit_rate: float | None = None  # work/second, None = batch
     scenario: str = "single_queue"  # Scenario name
+    stall_timeout: float | None = None  # Auto-stop if stalled for N seconds
 
 
 class SimulationRunner:
