@@ -1,873 +1,532 @@
 # runcue Development Plan
 
-A phased approach to building runcue incrementally, with passing tests and an evolving simulator at each stage.
+A phased approach to building runcue incrementally, with passing tests at each stage.
 
 ## Principles
 
 1. **Small phases** — Each phase is independently testable and useful
-2. **Simulator grows with library** — runcue-sim evolves to exercise new features
-3. **Tests first** — Write tests that define expected behavior, then implement
-4. **Foundation before features** — Get persistence and basic operations solid before adding complexity
+2. **Tests first** — Write tests that define expected behavior, then implement
+3. **Foundation before features** — Get core scheduling solid before adding complexity
+4. **Artifact-based** — Dependencies check artifacts, not work completion
+5. **Stateless** — No persistence, artifacts are the source of truth
+
+---
+
+## Architecture Summary
+
+runcue is a **control tower** for scheduling work:
+
+- **runcue decides when** — Checks readiness, enforces rate limits, calls handlers
+- **You decide what** — Handlers do the work, you own artifacts
+- **Artifacts are proof** — Tasks produce evidence of completion
+- **No persistence** — Everything in-memory, artifacts are truth
+
+Key callbacks the client provides:
+
+| Callback | Question | Returns |
+|----------|----------|---------|
+| `@cue.is_ready` | "Are inputs valid?" | `bool` |
+| `@cue.is_stale` | "Is output missing/outdated?" | `bool` |
+| `@cue.priority` | "How urgent is this?" | `float` 0.0-1.0 |
+| `@cue.on_complete` | (event) Work completed | — |
+| `@cue.on_failure` | (event) Work failed | — |
 
 ---
 
 ## Current Status
 
-**Milestone 1: Proof of Concept — COMPLETE ✓**
+**Phase 0: Complete** — 11 tests passing
 
 | Phase | Status | Tests |
 |-------|--------|-------|
-| Phase 0: Project Setup | ✓ Complete | 4 |
-| Phase 1: Data Models & Persistence | ✓ Complete | 12 |
-| Phase 2: Basic Queue Operations | ✓ Complete (merged into P1) | — |
-| Phase 3: Async Executor | ✓ Complete | 11 |
-
-**Total: 27 tests passing**
-
-**Simulator: runcue-sim with Rich TUI ✓**
-- Live progress display with Rich library
-- Configurable latency, error rates, concurrency
-- Service status tracking
-- Recent events log
-- Simple mode fallback (no Rich dependency)
-
-**Next: Milestone 2 — Rate-Limited (Phases 4-5)**
+| Phase 0: Project Setup | ✓ Complete | 11 |
+| Phase 1: Data Models | Pending | — |
+| Phase 2: Basic Execution | Pending | — |
 
 ---
 
 ## Phase 0: Project Setup ✓
 
-**Goal**: Establish project structure, tooling, and CI.
+**Goal**: Establish project structure, tooling, and basic instantiation.
 
 ### Tasks
 
-- [x] Create Python package structure (`src/runcue/`)
-- [x] Set up `pyproject.toml` with dependencies (aiosqlite, pytest, pytest-asyncio)
-- [x] Create basic test infrastructure (`tests/`)
-- [x] Add `.gitignore` for Python/SQLite artifacts
-- [x] Create stub `Cue` class that can be imported
+- [x] Clean up old implementation files
+- [x] Update `__init__.py` exports
+- [x] Create stub `Cue` class
+- [x] Basic test infrastructure
 
-### Tests
+### Tests (11 passing)
 
-```python
-def test_import():
-    import runcue
-    assert hasattr(runcue, 'Cue')
-
-def test_cue_instantiation():
-    cue = runcue.Cue(":memory:")
-    assert cue is not None
-```
-
-### Simulator
-
-None yet — just verify project runs.
+- `test_import`
+- `test_cue_instantiation`
+- `test_service_registration`
+- `test_service_rate_formats`
+- `test_service_no_rate`
+- `test_task_registration`
+- `test_is_ready_registration`
+- `test_is_stale_registration`
+- `test_priority_registration`
+- `test_on_complete_registration`
+- `test_on_failure_registration`
 
 ---
 
-## Phase 1: Data Models & Persistence ✓
+## Phase 1: Data Models (In-Memory)
 
-**Goal**: Define core data structures and SQLite schema. No execution yet.
+**Goal**: Define core data structures. In-memory queue, no persistence.
 
-### Tasks
-
-- [x] Define `WorkUnit` dataclass (id, task_type, target, params, state, etc.)
-- [x] Define `Service` dataclass (name, max_concurrent, rate_limit, rate_window)
-- [x] Define `TaskType` dataclass (name, services, executor, handler)
-- [x] Create SQLite schema for `work_units` table
-- [x] Create SQLite schema for `services` table
-- [x] Implement database initialization and migrations
-- [x] Implement `cue.service()` to register services
-- [x] Implement `@cue.task()` decorator to register task types
-
-### Schema
-
-```sql
-CREATE TABLE work_units (
-    id TEXT PRIMARY KEY,
-    task_type TEXT NOT NULL,
-    target TEXT,
-    params TEXT,  -- JSON
-    state TEXT DEFAULT 'queued',  -- queued, running, completed, failed, cancelled
-    created_at REAL NOT NULL,
-    started_at REAL,
-    completed_at REAL,
-    result TEXT,  -- JSON
-    error TEXT,
-    attempt INTEGER DEFAULT 1
-);
-
-CREATE TABLE services (
-    name TEXT PRIMARY KEY,
-    max_concurrent INTEGER,
-    rate_limit INTEGER,
-    rate_window INTEGER,
-    circuit_state TEXT DEFAULT 'closed',
-    circuit_failures INTEGER DEFAULT 0,
-    circuit_last_failure REAL
-);
-```
-
-### Tests
+### Models
 
 ```python
-async def test_service_registration():
-    cue = runcue.Cue(":memory:")
-    cue.service("openai", rate_limit=(60, 60), max_concurrent=5)
-    # Verify service stored in DB
+@dataclass
+class WorkUnit:
+    id: str
+    task: str           # Task type name
+    params: dict        # All parameters
+    state: WorkState    # pending, running, completed, failed
+    created_at: float
+    started_at: float | None
+    completed_at: float | None
+    result: dict | None
+    error: str | None
+    attempt: int        # Current attempt (1, 2, 3...)
 
-async def test_task_registration():
-    cue = runcue.Cue(":memory:")
-    
-    @cue.task("extract", services=["openai"])
-    async def extract(work):
-        return {"done": True}
-    
-    # Verify task type registered
-
-async def test_work_unit_persistence():
-    cue = runcue.Cue("./test.db")
-    work_id = await cue.submit("extract", target="/path/to/file")
-    
-    # Restart with same DB
-    cue2 = runcue.Cue("./test.db")
-    work = await cue2.get(work_id)
-    assert work.state == "queued"
+class WorkState(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 ```
 
-### Simulator (v0.1)
+### In-Memory Storage
 
-Basic harness that can create work units:
-
-```bash
-runcue-sim --count 100 --pattern none
-# Creates 100 independent work units, no execution
-# Output: "Created 100 work units in queue"
+```python
+# In Cue class
+self._queue: list[WorkUnit] = []           # Pending work
+self._active: dict[str, WorkUnit] = {}     # Running work
 ```
-
----
-
-## Phase 2: Basic Queue Operations ✓
-
-**Goal**: Submit work, retrieve status, no execution yet.
-
-*Note: Implemented as part of Phase 1.*
 
 ### Tasks
 
-- [x] Implement `cue.submit()` — creates work unit, returns ID
-- [x] Implement `cue.get(work_id)` — retrieve work unit by ID
-- [x] Implement `cue.list()` — query work units by state
-- [x] Implement `idempotency_key` duplicate detection
-- [x] Generate unique work IDs (UUID or similar)
+- [ ] Implement `submit()` — create work, add to queue
+- [ ] Implement `get()` — retrieve work by ID
+- [ ] Implement `list()` — query work by state/task
+- [ ] Generate unique work IDs
 
 ### Tests
 
 ```python
 async def test_submit_returns_id():
-    cue = runcue.Cue(":memory:")
-    cue.service("api", rate_limit=(10, 60))
+    cue = runcue.Cue()
+    cue.service("api", rate="60/min")
     
-    @cue.task("process", services=["api"])
-    async def process(work):
+    @cue.task("process", uses="api")
+    def process(work):
         return {}
     
-    work_id = await cue.submit("process", target="test")
+    work_id = await cue.submit("process", params={"x": 1})
     assert work_id is not None
-    assert len(work_id) > 0
 
-async def test_idempotency_key():
-    cue = runcue.Cue(":memory:")
+async def test_get_returns_work():
+    cue = runcue.Cue()
     # ... setup ...
-    
-    id1 = await cue.submit("process", target="a", idempotency_key="unique-1")
-    id2 = await cue.submit("process", target="b", idempotency_key="unique-1")
-    assert id1 == id2  # Same key returns existing
-
-async def test_list_by_state():
-    cue = runcue.Cue(":memory:")
-    # ... submit several ...
-    
-    queued = await cue.list(state="queued")
-    assert len(queued) == expected_count
-```
-
-### Simulator (v0.2)
-
-Can now submit and query:
-
-```bash
-runcue-sim --count 100 --pattern none --stats
-# Output:
-# Submitted: 100
-# Queued: 100
-# Running: 0
-# Completed: 0
+    work_id = await cue.submit("process", params={"x": 1})
+    work = await cue.get(work_id)
+    assert work.params == {"x": 1}
+    assert work.state == WorkState.PENDING
 ```
 
 ---
 
-## Phase 3: Async Executor (Single Task) ✓
+## Phase 2: Basic Execution
 
-**Goal**: Execute one work unit at a time with async handler. No rate limiting yet.
+**Goal**: Execute work. All pending work runs (no readiness checks yet).
 
 ### Tasks
 
-- [x] Implement orchestrator loop (background asyncio task)
-- [x] Implement `cue.start()` — non-blocking, starts loop
-- [x] Implement `await cue.stop()` — graceful shutdown
-- [x] Pick one queued work unit, call handler, update state
-- [x] Store result/error in work unit
-- [x] Handle handler exceptions (mark failed)
+- [ ] Implement orchestrator loop (background asyncio task)
+- [ ] `cue.start()` — non-blocking, starts loop
+- [ ] `await cue.stop()` — graceful shutdown
+- [ ] Pick pending work, call handler, update state
+- [ ] Handle exceptions (mark failed)
 
 ### Tests
 
 ```python
 async def test_work_executes():
-    cue = runcue.Cue(":memory:")
-    cue.service("api", rate_limit=(100, 60))
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min", concurrent=10)
     
     executed = []
     
-    @cue.task("process", services=["api"])
-    async def process(work):
+    @cue.task("process", uses="api")
+    def process(work):
         executed.append(work.id)
-        return {"processed": True}
+        return {"done": True}
     
     cue.start()
-    work_id = await cue.submit("process", target="test")
+    work_id = await cue.submit("process", params={})
     
-    await asyncio.sleep(0.1)  # Let it run
+    await asyncio.sleep(0.1)
     await cue.stop()
     
     assert work_id in executed
-    work = await cue.get(work_id)
-    assert work.state == "completed"
-    assert work.result == {"processed": True}
 
 async def test_handler_exception_marks_failed():
-    # Handler raises → work.state == "failed", work.error set
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    @cue.task("failing", uses="api")
+    def failing(work):
+        raise ValueError("oops")
+    
+    cue.start()
+    work_id = await cue.submit("failing")
+    
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    work = await cue.get(work_id)
+    assert work.state == WorkState.FAILED
+    assert "oops" in work.error
 ```
-
-### Simulator (v0.3) ✓
-
-Rich TUI with live progress:
-
-```bash
-# Basic run with Rich TUI
-runcue-sim --count 50 --latency 200
-
-# With error injection
-runcue-sim --count 100 --latency 100 --error-rate 0.1
-
-# Set concurrency (not enforced yet - Phase 4)
-runcue-sim --count 50 --latency 300 --concurrent 5
-
-# Simple text mode (no Rich)
-runcue-sim --count 30 --latency 100 --no-tui
-
-# Verbose logging
-runcue-sim --count 20 --latency 50 -v
-```
-
-Features:
-- Live progress bar, throughput, queue stats
-- Service status panel with concurrent/rate display
-- Recent events log (started, completed, failed)
-- Final summary table
 
 ---
 
-## Phase 4: Concurrency & Rate Limiting
+## Phase 3: Rate Limiting & Concurrency
 
-**Goal**: Respect `max_concurrent` and `rate_limit` per service.
+**Goal**: Respect service limits (in-memory tracking).
 
 ### Tasks
 
-- [ ] Create `service_log` table to track usage
-- [ ] Implement concurrent limit check before dispatch
-- [ ] Implement rate limit check (count requests in window)
-- [ ] Execute multiple work units concurrently (up to limits)
-- [ ] Implement service log pruning (configurable retention)
+- [ ] Track active work per service
+- [ ] Track request timestamps per service (for rate windows)
+- [ ] Check concurrent limit before dispatch
+- [ ] Check rate limit before dispatch
+- [ ] Block work until limits allow
 
-### Schema Addition
+### In-Memory Tracking
 
-```sql
-CREATE TABLE service_log (
-    id INTEGER PRIMARY KEY,
-    service TEXT NOT NULL,
-    work_unit_id TEXT NOT NULL,
-    started_at REAL NOT NULL,
-    completed_at REAL
-);
-
-CREATE INDEX idx_service_log_service_time ON service_log(service, started_at);
+```python
+# Per service
+self._service_active: dict[str, set[str]] = {}  # service -> active work IDs
+self._service_requests: dict[str, list[float]] = {}  # service -> request timestamps
 ```
 
 ### Tests
 
 ```python
 async def test_max_concurrent_respected():
-    cue = runcue.Cue(":memory:")
-    cue.service("api", max_concurrent=2, rate_limit=(100, 60))
+    cue = runcue.Cue()
+    cue.service("api", concurrent=2, rate="100/min")
     
-    running_count = 0
+    running = 0
     max_running = 0
     
-    @cue.task("slow", services=["api"])
+    @cue.task("slow", uses="api")
     async def slow(work):
-        nonlocal running_count, max_running
-        running_count += 1
-        max_running = max(max_running, running_count)
-        await asyncio.sleep(0.1)
-        running_count -= 1
+        nonlocal running, max_running
+        running += 1
+        max_running = max(max_running, running)
+        await asyncio.sleep(0.05)
+        running -= 1
         return {}
     
     cue.start()
     for _ in range(10):
         await cue.submit("slow")
     
-    await asyncio.sleep(1)  # Let all complete
+    await asyncio.sleep(1)
     await cue.stop()
     
     assert max_running <= 2
 
 async def test_rate_limit_respected():
-    cue = runcue.Cue(":memory:")
-    cue.service("api", rate_limit=(5, 1))  # 5 per second
+    cue = runcue.Cue()
+    cue.service("api", rate="5/sec", concurrent=10)
     
-    # Submit 10, verify only 5 run in first second
-```
-
-### Simulator (v0.4)
-
-Service configuration:
-
-```bash
-runcue-sim --services mock_api:concurrent=5,rate=60/60 --count 100 --duration 30s
-# Shows rate limiting in action
-# Output includes: "Rate limited: 45 times"
+    # Submit 10, should take ~1 second (5 per sec)
+    cue.start()
+    for _ in range(10):
+        await cue.submit("task")
+    
+    start = time.time()
+    await asyncio.sleep(2.5)
+    await cue.stop()
+    
+    elapsed = time.time() - start
+    assert elapsed >= 1.5  # Rate limited
 ```
 
 ---
 
-## Phase 5: Multi-Service & Atomic Acquisition
+## Phase 4: Readiness Callback
 
-**Goal**: Tasks can require multiple services; acquire atomically.
+**Goal**: `@cue.is_ready` gates work execution.
 
 ### Tasks
 
-- [ ] Support multiple services per task type
-- [ ] Implement ordered acquisition (alphabetical) to prevent deadlock
-- [ ] All-or-nothing: release all if any unavailable
-- [ ] Test deadlock scenarios don't occur
+- [ ] Register `@cue.is_ready` callback
+- [ ] Call `is_ready(work)` before dispatch
+- [ ] Work stays pending if `is_ready` returns `False`
+- [ ] Periodic recheck of pending work
 
 ### Tests
 
 ```python
-async def test_multi_service_acquisition():
-    cue = runcue.Cue(":memory:")
-    cue.service("api", max_concurrent=1)
-    cue.service("storage", max_concurrent=1)
+async def test_is_ready_blocks_work():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
     
-    @cue.task("both", services=["api", "storage"])
-    async def both(work):
-        await asyncio.sleep(0.1)
-        return {}
+    ready_flag = False
     
-    # Verify both acquired together
-
-async def test_no_deadlock():
-    # Submit many tasks needing [api, storage] and [storage, api]
-    # Verify all complete (no deadlock)
-```
-
-### Simulator (v0.5)
-
-Multi-service scenarios:
-
-```bash
-runcue-sim --config multi_service.yaml --duration 60s
-# YAML defines tasks with multiple services
-# Verifies no deadlocks under load
-```
-
----
-
-## Phase 6: Dependencies
-
-**Goal**: Work units can depend on other work units.
-
-### Tasks
-
-- [ ] Add `depends_on` column to work_units (JSON array of IDs)
-- [ ] Implement `dependency_satisfied` callback registration
-- [ ] Default callback: check if dependent work is completed
-- [ ] Block work until dependencies satisfied
-- [ ] Fail dependents when prerequisite fails
-- [ ] Detect circular dependencies at submit time
-
-### Schema Addition
-
-```sql
-ALTER TABLE work_units ADD COLUMN depends_on TEXT;  -- JSON array
-```
-
-### Tests
-
-```python
-async def test_dependency_blocks_until_complete():
-    cue = runcue.Cue(":memory:")
-    # ... setup ...
+    @cue.task("needs_flag", uses="api")
+    def needs_flag(work):
+        return {"done": True}
     
-    id_a = await cue.submit("task_a")
-    id_b = await cue.submit("task_b", depends_on=[id_a])
+    @cue.is_ready
+    def is_ready(work):
+        return ready_flag
     
-    # B should not run until A completes
-
-async def test_dependency_failure_cascades():
-    # A fails → B marked failed with "prerequisite_failed"
-
-async def test_circular_dependency_rejected():
-    # Submit A depends on B, B depends on A → error at submit
-```
-
-### Simulator (v0.6)
-
-Dependency patterns:
-
-```bash
-runcue-sim --pattern diamond --count 50 --duration 30s
-# Creates diamond-shaped dependency graphs
-# Verifies correct ordering
-```
-
-```bash
-runcue-sim --pattern circular --expect-reject
-# Verifies circular deps are rejected
-```
-
----
-
-## Phase 7: Retry Policy
-
-**Goal**: Automatic retries with configurable backoff.
-
-### Tasks
-
-- [ ] Add retry fields to work_units (max_attempts, attempt, next_retry_at)
-- [ ] Implement retry policy configuration on task types
-- [ ] Implement backoff strategies: fixed, linear, exponential
-- [ ] Add jitter to prevent thundering herd
-- [ ] Distinguish transient vs permanent errors
-
-### Tests
-
-```python
-async def test_retry_on_transient_error():
-    fail_count = 0
-    
-    @cue.task("flaky", retry={"max_attempts": 3, "base_delay": 0.01})
-    async def flaky(work):
-        nonlocal fail_count
-        fail_count += 1
-        if fail_count < 3:
-            raise TransientError("try again")
-        return {"success": True}
-    
-    # Verify retries, eventually succeeds
-
-async def test_exponential_backoff():
-    # Verify delays increase exponentially
-
-async def test_max_attempts_then_fail():
-    # After max attempts, work is marked permanently failed
-```
-
-### Simulator (v0.7)
-
-Error injection:
-
-```bash
-runcue-sim --error-rate 0.1 --retry-policy exponential --duration 60s
-# 10% of work fails initially
-# Shows retry behavior, eventual success rate
-```
-
----
-
-## Phase 8: Leasing
-
-**Goal**: Crash recovery via lease expiration.
-
-### Tasks
-
-- [ ] Add lease fields to work_units (leased_by, lease_expires_at)
-- [ ] Acquire lease before dispatch (lease_duration = timeout + buffer)
-- [ ] Release lease on completion/failure
-- [ ] On startup: reclaim expired leases
-- [ ] Re-dispatch work with expired leases
-
-### Tests
-
-```python
-async def test_lease_acquired_before_dispatch():
-    # Work has lease while running
-
-async def test_lease_released_on_completion():
-    # Lease cleared after work completes
-
-async def test_expired_lease_reclaimed_on_restart():
-    cue = runcue.Cue("./test.db")
-    # Start work, force "crash" (don't complete)
-    # Verify lease_expires_at is set
-    
-    # Simulate restart
-    cue2 = runcue.Cue("./test.db")
-    await cue2.start()
-    # Verify work is re-dispatched after lease expires
-```
-
-### Simulator (v0.8)
-
-Crash simulation:
-
-```bash
-runcue-sim --scenario recovery --crash-after 10s --duration 30s
-# Simulates crash mid-processing
-# Verifies work resumes correctly
-```
-
----
-
-## Phase 9: Circuit Breaker
-
-**Goal**: Stop sending to failing services.
-
-### Tasks
-
-- [ ] Track consecutive failures per service
-- [ ] Implement circuit states: closed, open, half-open
-- [ ] Block requests when circuit open
-- [ ] Allow probe request in half-open state
-- [ ] Close circuit on probe success
-
-### Tests
-
-```python
-async def test_circuit_opens_after_failures():
-    # Service fails 5 times → circuit opens
-
-async def test_circuit_blocks_when_open():
-    # Work for open-circuit service stays queued
-
-async def test_circuit_closes_on_probe_success():
-    # After cooldown, one request allowed
-    # If succeeds, circuit closes
-```
-
-### Simulator (v0.9)
-
-Circuit breaker scenarios:
-
-```bash
-runcue-sim --scenario cascade_failure --duration 60s
-# One service fails repeatedly
-# Shows circuit breaker activation
-# Verifies work queues rather than fails
-```
-
----
-
-## Phase 10: Priority Callback
-
-**Goal**: Dynamic priority based on application logic.
-
-### Tasks
-
-- [ ] Implement `@cue.priority` decorator
-- [ ] Provide default priority (FIFO with starvation prevention)
-- [ ] Pre-filter candidates before scoring
-- [ ] Cache scores briefly for performance
-- [ ] Provide `PriorityContext` with wait_time, queue_depth, etc.
-
-### Tests
-
-```python
-async def test_higher_priority_runs_first():
-    @cue.priority
-    def prioritize(ctx):
-        if ctx.work.params.get("urgent"):
-            return 1.0
-        return 0.5
-    
-    await cue.submit("task", params={"urgent": False})
-    await cue.submit("task", params={"urgent": True})
-    
-    # Verify urgent runs first
-
-async def test_starvation_prevention():
-    # Old low-priority work eventually runs
-```
-
-### Simulator (v0.10)
-
-Priority testing:
-
-```bash
-runcue-sim --scenario priority_test --duration 60s
-# Mix of high/low priority work
-# Verifies ordering, detects priority inversions
-```
-
-```bash
-runcue-sim --scenario starvation --duration 120s
-# Continuous high-priority stream
-# Verifies low-priority eventually runs
-```
-
----
-
-## Phase 11: Events & Observability
-
-**Goal**: Emit events for monitoring and UI.
-
-### Tasks
-
-- [ ] Implement event types (work_queued, started, completed, failed, etc.)
-- [ ] Implement `cue.events()` async iterator
-- [ ] Implement throttling (per-work-unit for progress, never for completions)
-- [ ] Add basic metrics (counters, gauges)
-
-### Tests
-
-```python
-async def test_events_emitted():
-    events = []
-    
-    async def collect():
-        async for event in cue.events():
-            events.append(event)
-            if event.type == "completed":
-                break
-    
-    asyncio.create_task(collect())
-    await cue.submit("task")
-    
-    await asyncio.sleep(0.2)
-    
-    event_types = [e.type for e in events]
-    assert "work_queued" in event_types
-    assert "work_started" in event_types
-    assert "work_completed" in event_types
-```
-
-### Simulator (v0.11)
-
-Event display:
-
-```bash
-runcue-sim --count 50 --show-events
-# Streams events as they occur
-```
-
-TUI becomes viable here — shows queue state, events, service status.
-
----
-
-## Phase 12: Cancellation
-
-**Goal**: Cancel work explicitly.
-
-### Tasks
-
-- [ ] Implement `cue.cancel(work_id)`
-- [ ] Implement `cascade=True` option
-- [ ] Signal running handlers via `work.cancelled`
-- [ ] Mark queued dependents appropriately
-
-### Tests
-
-```python
-async def test_cancel_queued_work():
-    work_id = await cue.submit("task")
-    await cue.cancel(work_id)
+    cue.start()
+    work_id = await cue.submit("needs_flag")
+    await asyncio.sleep(0.1)
     
     work = await cue.get(work_id)
-    assert work.state == "cancelled"
-
-async def test_cancel_cascade():
-    id_a = await cue.submit("task")
-    id_b = await cue.submit("task", depends_on=[id_a])
+    assert work.state == WorkState.PENDING  # Blocked
     
-    await cue.cancel(id_a, cascade=True)
+    ready_flag = True
+    await asyncio.sleep(0.2)
     
-    work_b = await cue.get(id_b)
-    assert work_b.state == "cancelled"
-```
-
-### Simulator (v0.12)
-
-Interactive cancellation:
-
-```bash
-runcue-sim --tui
-# Press K to cancel running work
-# Observe cascade behavior
+    work = await cue.get(work_id)
+    assert work.state == WorkState.COMPLETED  # Now runs
+    
+    await cue.stop()
 ```
 
 ---
 
-## Phase 13: Process Pool & Subprocess Executors
+## Phase 5: Staleness Callback
 
-**Goal**: Support CPU-bound and shell command work.
+**Goal**: `@cue.is_stale` skips work when output exists.
 
 ### Tasks
 
-- [ ] Implement process pool executor
-- [ ] Implement subprocess executor (handler returns command)
-- [ ] Capture stdout/stderr for subprocess
-- [ ] Handle timeouts for both executor types
-- [ ] Ensure cross-platform compatibility (spawn on Windows)
+- [ ] Register `@cue.is_stale` callback
+- [ ] After `is_ready` passes, check `is_stale`
+- [ ] If `is_stale` returns `False`, skip work (mark completed without running)
+- [ ] Emit `on_skip` callback for skipped work
+- [ ] Default: always stale (always run)
 
 ### Tests
 
 ```python
-async def test_process_pool_executor():
-    @cue.task("cpu_work", executor="process_pool")
-    def heavy_compute(work):
-        return {"result": sum(range(1000000))}
+async def test_is_stale_skips_work():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
     
-    # Verify runs in separate process, returns result
-
-async def test_subprocess_executor():
-    @cue.task("shell", executor="subprocess")
-    def run_command(work):
-        return ["echo", "hello"]
+    executed = []
+    stale = True
     
-    # Verify command executed, stdout captured
-```
-
-### Simulator (v0.13)
-
-Executor mix:
-
-```bash
-runcue-sim --executors async:0.6,process:0.3,subprocess:0.1 --duration 60s
-# Mix of executor types
-# Verifies all work correctly
+    @cue.task("extract", uses="api")
+    def extract(work):
+        executed.append(work.id)
+        return {}
+    
+    @cue.is_stale
+    def is_stale(work):
+        return stale
+    
+    # First run: stale=True, should execute
+    cue.start()
+    work_id = await cue.submit("extract")
+    await asyncio.sleep(0.1)
+    assert work_id in executed
+    
+    # Second run: stale=False, should skip
+    stale = False
+    executed.clear()
+    work_id2 = await cue.submit("extract")
+    await asyncio.sleep(0.1)
+    assert work_id2 not in executed
+    
+    await cue.stop()
 ```
 
 ---
 
-## Phase 14: Backpressure
+## Phase 6: Event Callbacks
 
-**Goal**: Prevent unbounded queue growth.
+**Goal**: Callbacks for history and metrics.
 
 ### Tasks
 
-- [ ] Implement `max_queued` configuration
-- [ ] Implement `on_backpressure` callback
-- [ ] Implement reject policies: `reject`, `drop_oldest`, `block`
-- [ ] Emit `backpressure_active` events
+- [ ] Implement `@cue.on_complete(work, result, duration)`
+- [ ] Implement `@cue.on_failure(work, error, will_retry)`
+- [ ] Implement `@cue.on_skip(work)`
+- [ ] Implement `@cue.on_start(work)`
+- [ ] Track duration per work unit
 
 ### Tests
 
 ```python
-async def test_backpressure_rejects():
-    cue = runcue.Cue(":memory:", max_queued=10)
+async def test_on_complete_called():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
     
-    for i in range(15):
-        try:
-            await cue.submit("task")
-        except BackpressureError:
-            assert i >= 10
-```
-
-### Simulator (v0.14)
-
-Burst testing:
-
-```bash
-runcue-sim --scenario burst --max-queued 1000 --duration 60s
-# Sudden spike to 200% capacity
-# Shows backpressure handling
+    completions = []
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        return {"x": 1}
+    
+    @cue.on_complete
+    def on_complete(work, result, duration):
+        completions.append((work.id, result, duration))
+    
+    cue.start()
+    work_id = await cue.submit("task")
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    assert len(completions) == 1
+    assert completions[0][0] == work_id
+    assert completions[0][1] == {"x": 1}
+    assert completions[0][2] >= 0  # duration
 ```
 
 ---
 
-## Phase 15: Full Integration & Polish
+## Phase 7: Priority Callback
 
-**Goal**: Complete API, documentation, edge cases.
+**Goal**: `@cue.priority` controls scheduling order.
 
 ### Tasks
 
-- [ ] Dependency timeout handling
-- [ ] Service log retention configuration
-- [ ] Complete error messages and validation
-- [ ] API documentation
-- [ ] Performance optimization pass
-- [ ] Example applications
+- [ ] Register `@cue.priority` callback
+- [ ] Provide context (work, wait_time, queue_depth)
+- [ ] Returns 0.0-1.0, higher runs first
+- [ ] Default: FIFO with starvation prevention
 
-### Simulator (Final)
+### Tests
 
-Full TUI with all features:
-
-```bash
-runcue-sim --tui --scenario steady_load --duration 5m
+```python
+async def test_priority_ordering():
+    cue = runcue.Cue()
+    cue.service("api", concurrent=1, rate="100/min")
+    
+    order = []
+    
+    @cue.task("task", uses="api")
+    async def task(work):
+        order.append(work.params["name"])
+        await asyncio.sleep(0.01)
+        return {}
+    
+    @cue.priority
+    def prioritize(ctx):
+        return ctx.work.params.get("priority", 0.5)
+    
+    cue.start()
+    
+    await cue.submit("task", params={"name": "low", "priority": 0.1})
+    await cue.submit("task", params={"name": "high", "priority": 0.9})
+    await cue.submit("task", params={"name": "med", "priority": 0.5})
+    
+    await asyncio.sleep(0.5)
+    await cue.stop()
+    
+    assert order[0] == "high"
 ```
 
-All interactive controls working, metrics tracked, scenarios available.
+---
+
+## Phase 8: Retry
+
+**Goal**: Automatic retries with backoff.
+
+### Tasks
+
+- [ ] `retry=N` on task decorator
+- [ ] Exponential backoff between attempts
+- [ ] `work.attempt` tracks current attempt
+- [ ] After max attempts, mark failed permanently
+- [ ] `on_failure` receives `will_retry` flag
+
+### Tests
+
+```python
+async def test_retry_on_failure():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    attempts = []
+    
+    @cue.task("flaky", uses="api", retry=3)
+    def flaky(work):
+        attempts.append(work.attempt)
+        if len(attempts) < 3:
+            raise ValueError("not yet")
+        return {"done": True}
+    
+    cue.start()
+    work_id = await cue.submit("flaky")
+    
+    await asyncio.sleep(1)
+    await cue.stop()
+    
+    assert len(attempts) == 3
+    work = await cue.get(work_id)
+    assert work.state == WorkState.COMPLETED
+```
+
+---
+
+## Phase 9: Polish
+
+**Goal**: Complete API, edge cases.
+
+### Tasks
+
+- [ ] Comprehensive error messages
+- [ ] Edge case handling
+- [ ] Performance optimization
+- [ ] Documentation examples
 
 ---
 
 ## Dependency Graph
 
 ```text
-Phase 0: Setup
+Phase 0: Setup ✓
     │
     ▼
-Phase 1: Data Models ──────────────────────────────┐
-    │                                              │
-    ▼                                              │
-Phase 2: Queue Ops                                 │
-    │                                              │
-    ▼                                              │
-Phase 3: Async Executor ◄──────────────────────────┤
-    │                                              │
-    ├──────────────────┬───────────────┐          │
-    ▼                  ▼               ▼          │
-Phase 4: Rate      Phase 6:       Phase 7:        │
-Limiting           Dependencies   Retry           │
-    │                  │               │          │
-    ▼                  │               │          │
-Phase 5: Multi-        │               │          │
-Service                │               │          │
-    │                  │               │          │
-    └──────────────────┴───────────────┘          │
-                       │                          │
-                       ▼                          │
-               Phase 8: Leasing ◄─────────────────┘
-                       │
-                       ▼
-               Phase 9: Circuit Breaker
-                       │
-           ┌───────────┴───────────┐
-           ▼                       ▼
-    Phase 10: Priority      Phase 11: Events
-           │                       │
-           └───────────┬───────────┘
-                       ▼
-               Phase 12: Cancellation
-                       │
-                       ▼
-               Phase 13: Executors
-                       │
-                       ▼
-               Phase 14: Backpressure
-                       │
-                       ▼
-               Phase 15: Polish
+Phase 1: Models
+    │
+    ▼
+Phase 2: Execution
+    │
+    ├────────────────┐
+    ▼                ▼
+Phase 3:         Phase 4:
+Rate Limiting    is_ready
+    │                │
+    └────────┬───────┘
+             ▼
+         Phase 5: is_stale
+             │
+             ▼
+         Phase 6: Callbacks
+             │
+             ▼
+         Phase 7: Priority
+             │
+             ▼
+         Phase 8: Retry
+             │
+             ▼
+         Phase 9: Polish
 ```
 
 ---
@@ -876,20 +535,18 @@ Service                │               │          │
 
 | Milestone | Phases | Capability |
 |-----------|--------|------------|
-| **M1: Proof of Concept** | 0-3 | Submit work, see it execute |
-| **M2: Rate-Limited** | 4-5 | Respect service limits |
-| **M3: Dependencies** | 6-7 | Chains of work, retries |
-| **M4: Production-Ready** | 8-11 | Crash recovery, observability |
-| **M5: Complete** | 12-15 | All features, polished |
+| **M1: Minimal** | 0-2 | Submit work, see it execute |
+| **M2: Controlled** | 3-5 | Rate limits, readiness, staleness |
+| **M3: Observable** | 6-7 | Callbacks, priority |
+| **M4: Resilient** | 8 | Retry |
+| **M5: Complete** | 9 | Polished, documented |
 
 ---
 
 ## Notes
 
-- Each phase should take 1-3 days of focused work
-- Tests are written first, then implementation
-- Simulator grows incrementally — don't over-engineer early versions
-- Keep the core loop simple; complexity lives in the broker/scheduler
-- SQLite WAL mode should be enabled from Phase 1
-
-
+- Each phase should take 1-2 days
+- Tests written first, then implementation
+- No database — fully in-memory
+- Artifacts are the source of truth
+- Community can add persistence via callbacks

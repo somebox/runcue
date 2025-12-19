@@ -54,7 +54,7 @@ async def run_with_display(config: SimConfig, use_tui: bool = True) -> None:
             
             try:
                 await runner.run()
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 runner.stop()
             finally:
                 update_task.cancel()
@@ -62,6 +62,8 @@ async def run_with_display(config: SimConfig, use_tui: bool = True) -> None:
                     await update_task
                 except asyncio.CancelledError:
                     pass
+                # Clean up orchestrator resources
+                await runner.cleanup()
         
         # Final summary
         print_final_summary(state)
@@ -81,7 +83,7 @@ async def run_with_display(config: SimConfig, use_tui: bool = True) -> None:
         
         try:
             await runner.run()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             runner.stop()
         finally:
             update_task.cancel()
@@ -89,6 +91,8 @@ async def run_with_display(config: SimConfig, use_tui: bool = True) -> None:
                 await update_task
             except asyncio.CancelledError:
                 pass
+            # Clean up orchestrator resources
+            await runner.cleanup()
         
         print()  # Newline after progress
         print_final_summary(state)
@@ -146,7 +150,25 @@ Examples:
         "--latency", "-l",
         type=int,
         default=100,
-        help="Simulated handler latency in ms (default: 100)",
+        help="Base handler latency in ms (default: 100)",
+    )
+    parser.add_argument(
+        "--jitter", "-j",
+        type=float,
+        default=0.2,
+        help="Latency variance as fraction, e.g. 0.2 = ±20%% (default: 0.2)",
+    )
+    parser.add_argument(
+        "--outliers",
+        type=float,
+        default=0.0,
+        help="Chance of outlier (slow) request, 0.0-1.0 (default: 0.0)",
+    )
+    parser.add_argument(
+        "--outlier-mult",
+        type=float,
+        default=5.0,
+        help="Outlier latency multiplier (default: 5.0)",
     )
     parser.add_argument(
         "--error-rate", "-e",
@@ -226,6 +248,9 @@ Examples:
     config = SimConfig(
         count=args.count,
         latency_ms=args.latency,
+        latency_jitter=args.jitter,
+        outlier_chance=args.outliers,
+        outlier_multiplier=args.outlier_mult,
         error_rate=args.error_rate,
         duration=args.duration,
         db_path=args.db,
@@ -234,10 +259,48 @@ Examples:
         submit_rate=args.submit_rate,
     )
     
-    # Run
+    # Run with proper interrupt handling
+    async def run_main():
+        """Wrapper to handle signals properly."""
+        import signal
+        
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
+        
+        def handle_signal():
+            stop_event.set()
+        
+        # Set up signal handlers
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, handle_signal)
+        
+        # Create task for main work
+        main_task = asyncio.create_task(run_with_display(config, use_tui=use_tui))
+        stop_task = asyncio.create_task(stop_event.wait())
+        
+        # Wait for either completion or interrupt
+        done, pending = await asyncio.wait(
+            [main_task, stop_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        
+        # Check if we were interrupted
+        if stop_task in done:
+            print("\nInterrupted.")
+            sys.exit(130)
+    
     try:
-        asyncio.run(run_with_display(config, use_tui=use_tui))
+        asyncio.run(run_main())
     except KeyboardInterrupt:
+        # Fallback for immediate interrupts
         print("\nInterrupted.")
         sys.exit(130)
 

@@ -19,7 +19,6 @@ try:
     from rich.layout import Layout
     from rich.live import Live
     from rich.panel import Panel
-    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
     from rich.table import Table
     from rich.text import Text
 
@@ -66,6 +65,7 @@ class SimulationState:
     running: int = 0
     completed: int = 0
     failed: int = 0
+    retrying: int = 0
     
     # Timing
     start_time: float = 0.0
@@ -78,10 +78,16 @@ class SimulationState:
     events: list[EventRecord] = field(default_factory=list)
     max_events: int = 10
     
-    # Config
+    # Config display
     target_count: int = 0
     latency_ms: int = 0
+    latency_jitter: float = 0.2
+    outlier_chance: float = 0.0
     error_rate: float = 0.0
+    
+    # Status flags
+    backpressure: bool = False
+    paused: bool = False
     
     @property
     def throughput(self) -> float:
@@ -112,16 +118,13 @@ class SimulationState:
 
 
 class SimulatorDisplay:
-    """Rich-based display for the simulator.
+    """Rich-based TUI display for the simulator.
     
-    Usage:
-        state = SimulationState()
-        display = SimulatorDisplay(state)
-        
-        with display:
-            # Update state in your loop
-            state.completed += 1
-            display.refresh()
+    Matches the design spec mockup with:
+    - Queue stats panel
+    - Services panel with progress bars
+    - Recent events log
+    - Controls footer
     """
     
     def __init__(self, state: SimulationState, console: Console | None = None):
@@ -156,26 +159,37 @@ class SimulatorDisplay:
             self._live.update(self._build_layout())
     
     def _build_layout(self) -> Panel:
-        """Build the main display layout."""
+        """Build the main display layout matching design spec."""
+        s = self.state
+        
+        # Build sections
+        sections = []
+        
+        # Queue section
+        sections.append(self._build_queue_section())
+        
+        # Services section
+        sections.append(self._build_services_section())
+        
+        # Events section
+        sections.append(self._build_events_section())
+        
+        # Controls section
+        sections.append(self._build_controls_section())
+        
+        # Combine into layout
         layout = Layout()
-        
         layout.split_column(
-            Layout(name="header", size=3),
-            Layout(name="body"),
-            Layout(name="footer", size=3),
+            Layout(name="queue", size=4),
+            Layout(name="services", size=3 + len(s.services)),
+            Layout(name="events", size=6),
+            Layout(name="controls", size=3),
         )
         
-        layout["body"].split_column(
-            Layout(name="queue", size=5),
-            Layout(name="services", size=8),
-            Layout(name="events"),
-        )
-        
-        layout["header"].update(self._build_header())
-        layout["queue"].update(self._build_queue_panel())
-        layout["services"].update(self._build_services_panel())
-        layout["events"].update(self._build_events_panel())
-        layout["footer"].update(self._build_footer())
+        layout["queue"].update(sections[0])
+        layout["services"].update(sections[1])
+        layout["events"].update(sections[2])
+        layout["controls"].update(sections[3])
         
         return Panel(
             layout,
@@ -183,75 +197,66 @@ class SimulatorDisplay:
             border_style="cyan",
         )
     
-    def _build_header(self) -> Panel:
-        """Build the header with config info."""
-        s = self.state
-        text = Text()
-        text.append("Target: ", style="dim")
-        text.append(f"{s.target_count}", style="bold")
-        text.append("  Latency: ", style="dim")
-        text.append(f"{s.latency_ms}ms", style="bold")
-        text.append("  Error rate: ", style="dim")
-        text.append(f"{s.error_rate * 100:.0f}%", style="bold red" if s.error_rate > 0 else "bold")
-        
-        return Panel(text, border_style="dim")
-    
-    def _build_queue_panel(self) -> Panel:
-        """Build the queue status panel."""
+    def _build_queue_section(self) -> Panel:
+        """Build queue stats panel matching design spec."""
         s = self.state
         
-        # Progress bar
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(bar_width=40),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TimeElapsedColumn(),
-            expand=True,
-        )
-        task = progress.add_task("Processing", total=s.submitted or 1, completed=s.completed + s.failed)
-        
-        # Stats line
-        stats = Table.grid(expand=True)
-        stats.add_column(justify="center")
-        stats.add_column(justify="center")
-        stats.add_column(justify="center")
-        stats.add_column(justify="center")
-        stats.add_column(justify="center")
+        # Main stats line
+        stats = Table.grid(expand=True, padding=(0, 2))
+        stats.add_column(justify="left")
+        stats.add_column(justify="left")
+        stats.add_column(justify="left")
+        stats.add_column(justify="left")
         
         stats.add_row(
-            f"[dim]Queued:[/dim] [bold]{s.queued}[/bold]",
+            f"[dim]Queued:[/dim] [bold]{s.queued:,}[/bold]",
             f"[dim]Running:[/dim] [bold yellow]{s.running}[/bold yellow]",
-            f"[dim]Completed:[/dim] [bold green]{s.completed}[/bold green]",
+            f"[dim]Completed:[/dim] [bold green]{s.completed:,}[/bold green]",
             f"[dim]Failed:[/dim] [bold red]{s.failed}[/bold red]",
+        )
+        
+        # Secondary stats line
+        stats2 = Table.grid(expand=True, padding=(0, 2))
+        stats2.add_column(justify="left")
+        stats2.add_column(justify="left")
+        stats2.add_column(justify="left")
+        
+        bp_status = "[red]ON[/red]" if s.backpressure else "[green]OFF[/green]"
+        pct = s.progress * 100
+        
+        stats2.add_row(
+            f"[dim]Backpressure:[/dim] {bp_status}",
+            f"[dim]Progress:[/dim] [bold]{pct:.0f}%[/bold]",
             f"[dim]Throughput:[/dim] [bold]{s.throughput:.1f}/s[/bold]",
         )
         
         # Combine
-        table = Table.grid(expand=True)
-        table.add_row(progress)
-        table.add_row(stats)
+        content = Table.grid(expand=True)
+        content.add_row(stats)
+        content.add_row(stats2)
         
-        return Panel(table, title="[bold]Queue[/bold]", border_style="blue")
+        return Panel(content, title="[bold]Queue[/bold]", border_style="blue")
     
-    def _build_services_panel(self) -> Panel:
-        """Build the services status panel."""
-        table = Table(expand=True, box=None, padding=(0, 1))
-        table.add_column("Service", style="bold")
-        table.add_column("Concurrent", justify="center")
-        table.add_column("Rate", justify="center")
-        table.add_column("Status", justify="center")
+    def _build_services_section(self) -> Panel:
+        """Build services panel with progress bars."""
+        s = self.state
         
-        for name, svc in self.state.services.items():
+        table = Table(box=None, expand=True, padding=(0, 1), show_header=False)
+        table.add_column("Service", width=12)
+        table.add_column("Concurrent", width=24)
+        table.add_column("Rate", width=12, justify="center")
+        table.add_column("Status", width=10, justify="center")
+        
+        for name, svc in s.services.items():
             # Concurrent bar
             if svc.max_concurrent:
                 pct = svc.current_concurrent / svc.max_concurrent
-                bar = self._mini_bar(pct, 10)
-                concurrent = f"{bar} {svc.current_concurrent}/{svc.max_concurrent}"
+                bar = self._progress_bar(pct, 10)
+                concurrent = f"{bar} {svc.current_concurrent}/{svc.max_concurrent} concurrent"
             else:
                 concurrent = "[dim]—[/dim]"
             
-            # Rate
+            # Rate display
             if svc.rate_limit and svc.rate_window:
                 rate = f"{svc.current_rate}/{svc.rate_limit}"
             else:
@@ -265,59 +270,80 @@ class SimulatorDisplay:
             else:
                 status = "[yellow]◐ HALF[/yellow]"
             
-            table.add_row(name, concurrent, rate, status)
+            table.add_row(f"[bold]{name}[/bold]", concurrent, rate, status)
         
-        if not self.state.services:
+        if not s.services:
             table.add_row("[dim]No services configured[/dim]", "", "", "")
         
         return Panel(table, title="[bold]Services[/bold]", border_style="blue")
     
-    def _build_events_panel(self) -> Panel:
-        """Build the recent events panel."""
-        table = Table(expand=True, box=None, padding=(0, 1))
-        table.add_column("Time", style="dim", width=10)
-        table.add_column("Event", width=15)
-        table.add_column("Work ID", width=12)
+    def _build_events_section(self) -> Panel:
+        """Build recent events panel."""
+        s = self.state
+        
+        table = Table(box=None, expand=True, padding=(0, 1), show_header=False)
+        table.add_column("Time", width=10, style="dim")
+        table.add_column("Event", width=14)
+        table.add_column("ID", width=10)
+        table.add_column("Task", width=12)
         table.add_column("Details")
         
-        for event in self.state.events[:8]:
+        for event in s.events[:5]:
             time_str = event.timestamp.strftime("%H:%M:%S")
             
-            # Color by event type
-            if event.event_type == "completed":
-                event_style = "green"
-            elif event.event_type == "failed":
-                event_style = "red"
-            elif event.event_type == "started":
-                event_style = "yellow"
-            else:
-                event_style = "dim"
+            # Style by event type
+            event_styles = {
+                "completed": "green",
+                "failed": "red",
+                "started": "yellow",
+                "retrying": "magenta",
+                "queued": "dim",
+                "rate_limited": "cyan",
+            }
+            style = event_styles.get(event.event_type, "white")
             
             work_short = event.work_id[:8] if event.work_id else ""
-            details = event.details or event.task_type or ""
+            task = event.task_type or ""
+            details = event.details[:25] if event.details else ""
             
             table.add_row(
                 time_str,
-                f"[{event_style}]{event.event_type}[/{event_style}]",
+                f"[{style}]{event.event_type}[/{style}]",
                 work_short,
-                details[:30],
+                task,
+                details,
             )
         
-        if not self.state.events:
-            table.add_row("[dim]No events yet[/dim]", "", "", "")
+        if not s.events:
+            table.add_row("[dim]No events yet[/dim]", "", "", "", "")
         
         return Panel(table, title="[bold]Recent Events[/bold]", border_style="blue")
     
-    def _build_footer(self) -> Panel:
-        """Build the footer with controls hint."""
-        return Panel(
-            "[dim]Press Ctrl+C to stop[/dim]",
-            border_style="dim",
-        )
+    def _build_controls_section(self) -> Panel:
+        """Build controls/config footer."""
+        s = self.state
+        
+        # Config info
+        text = Text()
+        text.append("Latency: ", style="dim")
+        text.append(f"{s.latency_ms}ms", style="bold")
+        if s.latency_jitter > 0:
+            text.append(f" ±{s.latency_jitter*100:.0f}%", style="dim")
+        if s.outlier_chance > 0:
+            text.append(f"  Outliers: ", style="dim")
+            text.append(f"{s.outlier_chance*100:.0f}%", style="bold yellow")
+        text.append("  Error: ", style="dim")
+        text.append(f"{s.error_rate*100:.0f}%", style="bold red" if s.error_rate > 0 else "bold")
+        text.append("  Target: ", style="dim")
+        text.append(f"{s.target_count:,}", style="bold")
+        text.append("    Ctrl+C to stop", style="dim")
+        
+        return Panel(text, title="[bold]Config[/bold]", border_style="dim")
     
     @staticmethod
-    def _mini_bar(pct: float, width: int = 10) -> str:
+    def _progress_bar(pct: float, width: int = 10) -> str:
         """Create a mini progress bar."""
+        pct = min(1.0, max(0.0, pct))
         filled = int(pct * width)
         empty = width - filled
         
@@ -344,4 +370,3 @@ def print_simple_stats(state: SimulationState) -> None:
         end="",
         flush=True,
     )
-

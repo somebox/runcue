@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 import runcue
-from runcue import WorkState
+from runcue import WorkState, db
 
 if TYPE_CHECKING:
     from runcue_sim.display import SimulationState
@@ -25,6 +25,9 @@ class SimConfig:
 
     count: int = 100
     latency_ms: int = 100
+    latency_jitter: float = 0.2  # ±20% variance
+    outlier_chance: float = 0.0  # Probability of outlier (0.0-1.0)
+    outlier_multiplier: float = 5.0  # Outliers take this much longer
     error_rate: float = 0.0
     duration: float | None = None
     db_path: str = ":memory:"
@@ -68,6 +71,8 @@ class SimulationRunner:
         self.state.start_time = time.time()
         self.state.target_count = self.config.count
         self.state.latency_ms = self.config.latency_ms
+        self.state.latency_jitter = self.config.latency_jitter
+        self.state.outlier_chance = self.config.outlier_chance
         self.state.error_rate = self.config.error_rate
         
         # Create orchestrator
@@ -97,10 +102,24 @@ class SimulationRunner:
             self.on_event("started", work_id, "mock_work", work.target or "")
             
             try:
-                # Simulate latency
-                actual_latency = self.config.latency_ms / 1000.0
-                if actual_latency > 0:
-                    actual_latency *= random.uniform(0.8, 1.2)
+                # Calculate latency with jitter and possible outliers
+                base_latency = self.config.latency_ms / 1000.0
+                actual_latency = base_latency
+                is_outlier = False
+                
+                if base_latency > 0:
+                    # Check for outlier first
+                    if self.config.outlier_chance > 0 and random.random() < self.config.outlier_chance:
+                        # Outlier: multiply base latency significantly
+                        actual_latency = base_latency * self.config.outlier_multiplier
+                        # Add extra variance to outliers
+                        actual_latency *= random.uniform(0.8, 1.5)
+                        is_outlier = True
+                    else:
+                        # Normal: apply jitter (±jitter_pct around base)
+                        jitter = self.config.latency_jitter
+                        actual_latency = base_latency * random.uniform(1 - jitter, 1 + jitter)
+                    
                     await asyncio.sleep(actual_latency)
                 
                 # Simulate errors
@@ -108,9 +127,12 @@ class SimulationRunner:
                     raise RuntimeError("Simulated error")
                 
                 duration_ms = int((time.time() - self._work_started.get(work_id, time.time())) * 1000)
-                self.on_event("completed", work_id, "mock_work", f"{duration_ms}ms")
+                detail = f"{duration_ms}ms"
+                if is_outlier:
+                    detail += " [outlier]"
+                self.on_event("completed", work_id, "mock_work", detail)
                 
-                return {"mock": True, "latency_ms": int(actual_latency * 1000)}
+                return {"mock": True, "latency_ms": duration_ms, "outlier": is_outlier}
                 
             except Exception as e:
                 self.on_event("failed", work_id, "mock_work", str(e))
@@ -184,10 +206,19 @@ class SimulationRunner:
         self.state.completed = len(completed)
         self.state.failed = len(failed)
         
-        # Update service concurrent count from actual running work
+        # Update service stats from database
         svc = self.state.services.get("mock_api")
         if svc:
-            svc.current_concurrent = len(running)
+            # Get actual concurrent count from service log
+            svc.current_concurrent = await db.count_active_service_uses(
+                self._cue.conn, "mock_api"
+            )
+            # Get current rate (requests in window)
+            if svc.rate_window:
+                window_start = time.time() - svc.rate_window
+                svc.current_rate = await db.count_service_requests_in_window(
+                    self._cue.conn, "mock_api", window_start
+                )
     
     @property
     def _elapsed(self) -> float:
@@ -196,5 +227,19 @@ class SimulationRunner:
     
     def stop(self) -> None:
         """Request simulation stop."""
+        self._running = False
+    
+    async def cleanup(self) -> None:
+        """Clean up resources. Call after interrupt or completion."""
+        if self._cue:
+            try:
+                await self._cue.stop()
+            except Exception:
+                pass  # Ignore errors during cleanup
+            try:
+                await self._cue.close()
+            except Exception:
+                pass
+            self._cue = None
         self._running = False
 
