@@ -1,6 +1,6 @@
 # runcue
 
-[![Tests](https://github.com/somebox/runcue/actions/workflows/test.yml/badge.svg)](https://github.com/somebox/runcue/actions/workflows/test.yml)
+[![Tests](https://github.com/somebox/runcue/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/somebox/runcue/actions/workflows/test.yml)
 
 ![runcue logo](./docs/images/runcue-logo-sm.png)
 
