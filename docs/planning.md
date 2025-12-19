@@ -1129,6 +1129,110 @@ Rate Limiting    is_ready
 
 ---
 
+## Simulator Updates
+
+The simulator (`runcue-sim`) needs to be updated for the new stateless API and extended with scenarios/profiles.
+
+### Phase 9: Simulator Core API Update ✓
+
+**Goal**: Update `runcue_sim` to work with the new in-memory, stateless runcue API.
+
+#### Breaking Changes Addressed
+
+| Old API | New API |
+|---------|---------|
+| `Cue(db_path)` | `Cue()` (no args) |
+| `from runcue import db` | Removed |
+| `service(..., max_concurrent=)` | `service(..., concurrent=)` |
+| `service(..., rate_limit=(60, 60))` | `service(..., rate="60/min")` |
+| `@cue.task("x", services=["api"])` | `@cue.task("x", uses="api")` |
+| `submit(task, target=...)` | `submit(task, params={...})` |
+| `WorkState.QUEUED` | `WorkState.PENDING` |
+| `await cue.close()` | Removed |
+| `db.count_active_*()` | Use callbacks to track |
+
+#### Tasks
+
+- [x] Update `runner.py` imports (remove `db` module)
+- [x] Update `Cue()` instantiation (no db_path)
+- [x] Update `service()` call (`concurrent=`, `rate=` string)
+- [x] Update `@cue.task()` decorator (`uses=` instead of `services=`)
+- [x] Update `submit()` calls (`params={}` instead of `target=`)
+- [x] Update state queries (`WorkState.PENDING` instead of `QUEUED`)
+- [x] Remove `await cue.close()` calls
+- [x] Use callbacks (`on_start`, `on_complete`, `on_failure`) to track state
+- [x] Remove db-based service stats queries
+- [x] Test: `runcue-sim --count 10 --latency 50` runs without errors
+
+---
+
+### Phase 10: Simulator Scenarios ✓
+
+**Goal**: Implement scenario system for different workload patterns.
+
+#### Scenarios Implemented
+
+| Scenario | Description |
+|----------|-------------|
+| `single_queue` | Single service, independent tasks (default) |
+| `fanout` | Split → process in parallel → aggregate |
+| `pipeline` | Extract → Transform → Load chain |
+| `dynamic` | Dynamic dependencies with rebuild cycles |
+
+#### Tasks
+
+- [x] Create `scenarios/` directory with `__init__.py`
+- [x] Define `Scenario` base class/protocol
+- [x] Implement `SingleQueueScenario` (current behavior)
+- [x] Implement `FanoutScenario` (1 split → N process → 1 aggregate)
+- [x] Implement `PipelineScenario` (A → B → C chain)
+- [x] Add `--scenario` CLI option
+- [x] Add `--list-scenarios` CLI option
+- [x] Test: `runcue-sim --scenario fanout --count 5` works
+- [x] Implement `dynamic` scenario with rebuild cycles
+
+---
+
+### Phase 11: Simulator Profiles
+
+**Goal**: Parameter presets for common testing scenarios.
+
+#### Profiles to Implement
+
+| Profile | Description |
+|---------|-------------|
+| `default` | Balanced settings |
+| `stress` | High volume, fast handlers |
+| `slow_api` | High latency, variable response |
+| `error_prone` | High error rate |
+
+#### Tasks
+
+- [ ] Define `Profile` dataclass with config overrides
+- [ ] Implement built-in profiles
+- [ ] Add `--profile` CLI option
+- [ ] Add `--list-profiles` CLI option
+- [ ] Allow combining `--scenario` and `--profile`
+- [ ] Test: `runcue-sim --profile stress` works
+
+---
+
+### Phase 12: Simulator TUI Polish (Partial)
+
+**Goal**: Improve TUI display to match spec mockup.
+
+#### Tasks
+
+- [ ] Add scenario/profile display in header
+- [x] Show multiple services with independent stats
+- [x] Per-service throughput and processed counts
+- [x] Improve progress bar colors and styling
+- [ ] Add elapsed time display
+- [ ] Better event log formatting
+- [x] Test: TUI displays correctly with multiple services
+
+---
+
 ## Milestones
 
 | Milestone | Phases | Capability |
@@ -1137,6 +1241,7 @@ Rate Limiting    is_ready
 | **M2: Controlled** | 3-5 | Rate limits, readiness, staleness |
 | **M3: Observable** | 6-7 | Callbacks, priority |
 | **M4: Complete** | 8 | Polished, documented |
+| **M5: Simulator** | 9-12 | Interactive testing tool |
 
 ---
 
