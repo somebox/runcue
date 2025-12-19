@@ -335,11 +335,36 @@ class Cue:
     async def _run_orchestrator(self) -> None:
         """Background loop that dispatches pending work."""
         while self._running:
-            # Check for pending work
-            if self._queue:
-                work = self._queue.pop(0)
+            # Collect work to dispatch (can't modify queue while iterating)
+            to_dispatch = []
+            remaining = []
+            
+            for work in self._queue:
+                task_type = self._tasks.get(work.task)
+                if task_type is None:
+                    remaining.append(work)
+                    continue
                 
-                # Move to active
+                service_name = task_type.service
+                
+                # Check service limits
+                if service_name and not self._can_dispatch(service_name):
+                    remaining.append(work)
+                    continue
+                
+                # Mark for dispatch and track in service immediately
+                # (so subsequent items in same loop see updated counts)
+                if service_name:
+                    self._service_active[service_name].add(work.id)
+                    self._service_requests[service_name].append(time.time())
+                
+                to_dispatch.append(work)
+            
+            # Update queue with remaining work
+            self._queue = remaining
+            
+            # Dispatch collected work
+            for work in to_dispatch:
                 work.state = WorkState.RUNNING
                 work.started_at = time.time()
                 self._active[work.id] = work
@@ -351,9 +376,41 @@ class Cue:
             # Small sleep to avoid busy loop
             await asyncio.sleep(0.01)
     
+    def _can_dispatch(self, service_name: str) -> bool:
+        """Check if service limits allow dispatching more work."""
+        service = self._services.get(service_name)
+        if service is None:
+            return True
+        
+        # Check concurrent limit
+        concurrent_limit = service.get("concurrent")
+        if concurrent_limit is not None:
+            active_count = len(self._service_active.get(service_name, set()))
+            if active_count >= concurrent_limit:
+                return False
+        
+        # Check rate limit
+        rate_limit = service.get("rate_limit")
+        rate_window = service.get("rate_window")
+        if rate_limit is not None and rate_window is not None:
+            now = time.time()
+            window_start = now - rate_window
+            
+            # Clean old timestamps and count recent requests
+            timestamps = self._service_requests.get(service_name, [])
+            recent = [t for t in timestamps if t > window_start]
+            self._service_requests[service_name] = recent
+            
+            if len(recent) >= rate_limit:
+                return False
+        
+        return True
+    
     async def _execute_work(self, work: WorkUnit) -> None:
         """Execute a single work unit."""
         task_type = self._tasks.get(work.task)
+        service_name = task_type.service if task_type else None
+        
         if task_type is None or task_type.handler is None:
             work.state = WorkState.FAILED
             work.error = f"No handler for task: {work.task}"
@@ -361,6 +418,9 @@ class Cue:
             self._active.pop(work.id, None)
             self._completed[work.id] = work
             self._work_tasks.pop(work.id, None)
+            # Release service slot
+            if service_name and service_name in self._service_active:
+                self._service_active[service_name].discard(work.id)
             return
         
         handler = task_type.handler
@@ -390,6 +450,9 @@ class Cue:
             self._active.pop(work.id, None)
             self._completed[work.id] = work
             self._work_tasks.pop(work.id, None)
+            # Release service slot
+            if service_name and service_name in self._service_active:
+                self._service_active[service_name].discard(work.id)
     
     # --- Work Operations ---
     

@@ -97,14 +97,15 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 
 ## Current Status
 
-**Phase 2: Complete** — 41 tests passing
+**Phase 3: Complete** — 50 tests passing
 
 | Phase | Status | Tests |
 |-------|--------|-------|
 | Phase 0: Project Setup | ✓ Complete | 13 |
 | Phase 1: Data Models | ✓ Complete | 15 |
 | Phase 2: Basic Execution | ✓ Complete | 13 |
-| Phase 3: Rate Limiting | Pending | — |
+| Phase 3: Rate Limiting | ✓ Complete | 9 |
+| Phase 4: Readiness | Pending | — |
 
 ---
 
@@ -408,17 +409,17 @@ async def test_submit_before_start_queues():
 
 ---
 
-## Phase 3: Rate Limiting & Concurrency
+## Phase 3: Rate Limiting & Concurrency ✓
 
 **Goal**: Respect service limits (in-memory tracking).
 
 ### Tasks
 
-- [ ] Track active work per service
-- [ ] Track request timestamps per service (for rate windows)
-- [ ] Check concurrent limit before dispatch
-- [ ] Check rate limit before dispatch
-- [ ] Block work until limits allow
+- [x] Track active work per service
+- [x] Track request timestamps per service (for rate windows)
+- [x] Check concurrent limit before dispatch
+- [x] Check rate limit before dispatch
+- [x] Queue work when limits exceeded (re-check each loop)
 
 ### In-Memory Tracking
 
@@ -433,7 +434,7 @@ self._service_requests: dict[str, list[float]] = {}  # service -> request timest
 ```python
 async def test_max_concurrent_respected():
     cue = runcue.Cue()
-    cue.service("api", concurrent=2, rate="100/min")
+    cue.service("api", concurrent=2, rate="1000/min")
     
     running = 0
     max_running = 0
@@ -443,22 +444,22 @@ async def test_max_concurrent_respected():
         nonlocal running, max_running
         running += 1
         max_running = max(max_running, running)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.02)
         running -= 1
         return {}
     
     cue.start()
-    for _ in range(10):
+    for _ in range(6):
         await cue.submit("slow", params={})
     
-    await asyncio.sleep(1)
+    await asyncio.sleep(0.15)
     await cue.stop()
     
     assert max_running <= 2
 
 async def test_rate_limit_throttles():
     cue = runcue.Cue()
-    cue.service("api", rate="10/sec", concurrent=10)
+    cue.service("api", rate="3/sec", concurrent=100)
     
     timestamps = []
     
@@ -468,16 +469,16 @@ async def test_rate_limit_throttles():
         return {}
     
     cue.start()
-    for _ in range(20):
+    for _ in range(6):
         await cue.submit("record", params={})
     
-    await asyncio.sleep(3)
+    await asyncio.sleep(1.5)
     await cue.stop()
     
-    # Should take ~2 seconds for 20 at 10/sec
-    assert len(timestamps) == 20
+    # First 3 run immediately, wait ~1s, then next 3
+    assert len(timestamps) == 6
     duration = timestamps[-1] - timestamps[0]
-    assert duration >= 1.5  # At least 1.5s (some tolerance)
+    assert duration >= 0.9
 ```
 
 ---

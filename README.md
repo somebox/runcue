@@ -65,9 +65,8 @@ def track(work, result, duration):
     my_database.log(work.id, result)
 
 @cue.on_failure
-def alert(work, error, will_retry):
-    if not will_retry:
-        slack.post(f"Failed: {work.task} - {error}")
+def alert(work, error):
+    slack.post(f"Failed: {work.task} - {error}")
 ```
 
 This keeps runcue simple. The community can build complementary packages for logging, caching artifact status, metrics dashboards, etc.
@@ -253,11 +252,10 @@ def on_complete(work, result, duration):
     my_metrics.histogram("task_duration", duration, tags={"task": work.task})
 
 @cue.on_failure
-def on_failure(work, error, will_retry):
+def on_failure(work, error):
     """Called after each failure."""
     logging.error(f"{work.task} failed: {error}")
-    if not will_retry:
-        alerting.send(f"Permanent failure: {work.task}")
+    alerting.send(f"Failed: {work.task}")
 
 @cue.on_skip
 def on_skip(work):
@@ -435,7 +433,7 @@ cue = runcue.Cue()
 cue.service("name", rate="N/min", concurrent=M)
 
 # Tasks
-@cue.task("name", uses="service", retry=3)
+@cue.task("name", uses="service")
 def handler(work):
     return {"result": ...}
 
@@ -451,7 +449,7 @@ def is_stale(work) -> bool: ...
 def on_complete(work, result, duration): ...
 
 @cue.on_failure
-def on_failure(work, error, will_retry): ...
+def on_failure(work, error): ...
 
 @cue.on_skip
 def on_skip(work): ...

@@ -97,14 +97,14 @@ Rate formats:
 Tasks define handlers for categories of work:
 
 ```python
-@cue.task("extract_text", uses="openai", retry=3)
+@cue.task("extract_text", uses="openai")
 def extract_text(work):
     text = call_api(work.params["image_path"])
     save_text(work.params["output_path"], text)
     return {"success": True, "length": len(text)}
 ```
 
-The `uses` parameter ties the task to a service for rate limiting. The handler owns all the logic—API calls, file operations, error handling.
+The `uses` parameter ties the task to a service for rate limiting. The handler owns all logic—API calls, file operations, error handling.
 
 ### Artifacts and Dependencies
 
@@ -222,11 +222,10 @@ def on_complete(work, result, duration):
     metrics.histogram("duration", duration, task=work.task)
 
 @cue.on_failure
-def on_failure(work, error, will_retry):
+def on_failure(work, error):
     """Called after failure."""
     logging.error(f"{work.task} failed: {error}")
-    if not will_retry:
-        alerting.send(f"Permanent failure: {work.task}")
+    alerting.send(f"Failed: {work.task}")
 
 @cue.on_skip
 def on_skip(work):
@@ -258,11 +257,11 @@ The scheduling loop:
 1. Get pending work from in-memory queue
 2. For each work unit:
    a. Call is_ready(work) → False? Stay pending
-   b. Call is_stale(work) → False? Skip (mark done)
+   b. Call is_stale(work) → False? Skip (emit on_skip)
    c. Check service limits → Exceeded? Wait
    d. All pass? Call handler
 3. On completion: emit on_complete
-4. On failure: emit on_failure, maybe retry
+4. On failure: emit on_failure
 5. Repeat
 ```
 
@@ -346,7 +345,7 @@ cue.start()                           # Start scheduling loop
 await cue.stop()                      # Graceful shutdown
 
 # Decorators
-@cue.task(name, uses=service, retry=n)    # Register task handler
+@cue.task(name, uses=service)             # Register task handler
 @cue.is_ready                              # Readiness callback
 @cue.is_stale                              # Staleness callback
 @cue.priority                              # Priority callback
@@ -383,23 +382,26 @@ Rate formats: `"60/min"`, `"1000/hour"`, `"10/sec"`
 
 ---
 
-## Retry and Failure Handling
+## Failure Handling
+
+When a handler raises an exception, the work is marked `FAILED` and `on_failure` is called:
 
 ```python
-@cue.task("flaky_api", uses="external", retry=3)
-def call_flaky_api(work):
+@cue.task("call_api", uses="external")
+def call_api(work):
     response = requests.post(url, json=work.params)
     response.raise_for_status()
     return response.json()
+
+@cue.on_failure
+def on_failure(work, error):
+    logging.error(f"{work.task} failed: {error}")
+    # Decide whether to retry
+    if should_retry(work, error):
+        asyncio.create_task(resubmit_with_delay(work))
 ```
 
-Retry policy:
-- `retry=N`: Max N attempts
-- Exponential backoff between attempts
-- Transient errors (timeout, 5xx) trigger retry
-- Permanent errors (4xx, validation) fail immediately
-
-After exhausting retries, `on_failure` is called with `will_retry=False`.
+**No built-in retry.** Retry logic varies by use case (backoff strategy, jitter, circuit breakers, max attempts). runcue notifies you of failures; you decide how to handle them.
 
 ---
 
