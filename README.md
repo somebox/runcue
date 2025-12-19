@@ -1,5 +1,7 @@
 # runcue
 
+[![Tests](https://github.com/somebox/runcue/actions/workflows/test.yml/badge.svg)](https://github.com/somebox/runcue/actions/workflows/test.yml)
+
 ![runcue logo](./docs/images/runcue-logo-sm.png)
 
 A Python library for coordinating work across rate-limited services. Define your tasks, tell runcue when they're ready to run, and let it handle the scheduling and throttling.
