@@ -345,6 +345,17 @@ class Cue:
                     remaining.append(work)
                     continue
                 
+                # Check if work is ready (inputs valid)
+                if not self._check_is_ready(work):
+                    remaining.append(work)
+                    continue
+                
+                # Check if work is stale (needs to run)
+                if not self._check_is_stale(work):
+                    # Skip this work - output is already valid
+                    self._skip_work(work)
+                    continue
+                
                 service_name = task_type.service
                 
                 # Check service limits
@@ -375,6 +386,39 @@ class Cue:
             
             # Small sleep to avoid busy loop
             await asyncio.sleep(0.01)
+    
+    def _check_is_ready(self, work: WorkUnit) -> bool:
+        """Check if work is ready to run. Returns True if no callback registered."""
+        if self._is_ready_callback is None:
+            return True
+        try:
+            return bool(self._is_ready_callback(work))
+        except Exception:
+            # Exception in callback = treat as not ready
+            return False
+    
+    def _check_is_stale(self, work: WorkUnit) -> bool:
+        """Check if work output is stale. Returns True if no callback registered."""
+        if self._is_stale_callback is None:
+            return True  # Default: always stale, always run
+        try:
+            return bool(self._is_stale_callback(work))
+        except Exception:
+            # Exception in callback = treat as stale (run the work)
+            return True
+    
+    def _skip_work(self, work: WorkUnit) -> None:
+        """Skip work unit without running handler."""
+        work.state = WorkState.COMPLETED  # Mark as completed (output valid)
+        work.completed_at = time.time()
+        self._completed[work.id] = work
+        
+        # Emit on_skip callback
+        if self._on_skip_callback:
+            try:
+                self._on_skip_callback(work)
+            except Exception:
+                pass  # Don't let callback errors affect flow
     
     def _can_dispatch(self, service_name: str) -> bool:
         """Check if service limits allow dispatching more work."""
@@ -426,6 +470,13 @@ class Cue:
         handler = task_type.handler
         start_time = time.time()
         
+        # Emit on_start callback
+        if self._on_start_callback:
+            try:
+                self._on_start_callback(work)
+            except Exception:
+                pass  # Don't let callback errors affect flow
+        
         try:
             # Call handler (sync or async)
             if inspect.iscoroutinefunction(handler):
@@ -439,11 +490,26 @@ class Cue:
             work.result = result
             work.completed_at = time.time()
             
+            # Emit on_complete callback
+            if self._on_complete_callback:
+                try:
+                    self._on_complete_callback(work, result, duration)
+                except Exception:
+                    pass  # Don't let callback errors affect flow
+            
         except Exception as e:
             # Failure
+            duration = time.time() - start_time
             work.state = WorkState.FAILED
             work.error = str(e)
             work.completed_at = time.time()
+            
+            # Emit on_failure callback
+            if self._on_failure_callback:
+                try:
+                    self._on_failure_callback(work, e)
+                except Exception:
+                    pass  # Don't let callback errors affect flow
         
         finally:
             # Move from active to completed

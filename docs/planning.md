@@ -97,7 +97,7 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 
 ## Current Status
 
-**Phase 3: Complete** — 50 tests passing
+**Phase 6: Complete** — 76 tests passing
 
 | Phase | Status | Tests |
 |-------|--------|-------|
@@ -105,7 +105,10 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 | Phase 1: Data Models | ✓ Complete | 15 |
 | Phase 2: Basic Execution | ✓ Complete | 13 |
 | Phase 3: Rate Limiting | ✓ Complete | 9 |
-| Phase 4: Readiness | Pending | — |
+| Phase 4: Readiness | ✓ Complete | 5 |
+| Phase 5: Staleness | ✓ Complete | 8 |
+| Phase 6: Event Callbacks | ✓ Complete | 13 |
+| Phase 7: Priority | Pending | — |
 
 ---
 
@@ -483,7 +486,7 @@ async def test_rate_limit_throttles():
 
 ---
 
-## Phase 4: Readiness Callback
+## Phase 4: Readiness Callback ✓
 
 **Goal**: `@cue.is_ready` gates work execution based on input availability.
 
@@ -502,11 +505,11 @@ def is_ready(work) -> bool:
 
 ### Tasks
 
-- [ ] Call `is_ready(work)` before dispatch in `_run_orchestrator()`
-- [ ] If no callback registered, default to `True` (always ready)
-- [ ] Work stays in queue if `is_ready` returns `False`
-- [ ] Handle `is_ready` exceptions (log warning, treat as not ready)
-- [ ] Work is rechecked each orchestrator loop iteration
+- [x] Call `is_ready(work)` before dispatch in `_run_orchestrator()`
+- [x] If no callback registered, default to `True` (always ready)
+- [x] Work stays in queue if `is_ready` returns `False`
+- [x] Handle `is_ready` exceptions (log warning, treat as not ready)
+- [x] Work is rechecked each orchestrator loop iteration
 
 ### Implementation Hints
 
@@ -657,7 +660,7 @@ async def test_is_ready_checked_per_work():
 
 ---
 
-## Phase 5: Staleness Callback
+## Phase 5: Staleness Callback ✓
 
 **Goal**: `@cue.is_stale` skips work when output already exists/is valid.
 
@@ -676,11 +679,11 @@ def is_stale(work) -> bool:
 
 ### Tasks
 
-- [ ] After `is_ready` passes, check `is_stale` in `_run_orchestrator()`
-- [ ] If `is_stale` returns `False`, skip work (don't run handler, don't track in service)
-- [ ] Emit `on_skip` callback for skipped work
-- [ ] If no callback registered, default to `True` (always stale, always run)
-- [ ] Handle `is_stale` exceptions (log warning, treat as stale—run the work)
+- [x] After `is_ready` passes, check `is_stale` in `_run_orchestrator()`
+- [x] If `is_stale` returns `False`, skip work (don't run handler, don't track in service)
+- [x] Emit `on_skip` callback for skipped work
+- [x] If no callback registered, default to `True` (always stale, always run)
+- [x] Handle `is_stale` exceptions (log warning, treat as stale—run the work)
 
 ### Implementation Hints
 
@@ -861,17 +864,17 @@ async def test_skipped_work_marked_completed():
 
 ---
 
-## Phase 6: Event Callbacks
+## Phase 6: Event Callbacks ✓
 
 **Goal**: Callbacks for history and metrics.
 
 ### Tasks
 
-- [ ] Implement `@cue.on_complete(work, result, duration)`
-- [ ] Implement `@cue.on_failure(work, error)`
-- [ ] Implement `@cue.on_skip(work)` (already in Phase 5)
-- [ ] Implement `@cue.on_start(work)`
-- [ ] Track duration per work unit
+- [x] Implement `@cue.on_complete(work, result, duration)`
+- [x] Implement `@cue.on_failure(work, error)`
+- [x] Implement `@cue.on_skip(work)` (already in Phase 5)
+- [x] Implement `@cue.on_start(work)`
+- [x] Track duration per work unit
 
 ### Tests
 
