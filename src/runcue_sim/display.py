@@ -6,6 +6,7 @@ It's decoupled from the simulation logic - it just renders data.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -38,6 +39,26 @@ class ServiceStatus:
     rate_window: int | None = None
     current_rate: int = 0
     circuit_state: str = "closed"
+    
+    # Throughput tracking
+    total_completed: int = 0
+    total_failed: int = 0
+    start_time: float = 0.0
+    
+    @property
+    def total_processed(self) -> int:
+        """Total items processed (completed + failed)."""
+        return self.total_completed + self.total_failed
+    
+    @property
+    def throughput(self) -> float:
+        """Items processed per second."""
+        if self.start_time <= 0:
+            return 0.0
+        elapsed = time.time() - self.start_time
+        if elapsed > 0:
+            return self.total_processed / elapsed
+        return 0.0
 
 
 @dataclass
@@ -88,6 +109,12 @@ class SimulationState:
     # Status flags
     backpressure: bool = False
     paused: bool = False
+    
+    # Scenario info
+    scenario_name: str = "single_queue"
+    
+    # Debug info (blocked work reasons)
+    blocked_info: list[dict] = field(default_factory=list)
     
     @property
     def throughput(self) -> float:
@@ -163,39 +190,79 @@ class SimulatorDisplay:
         s = self.state
         
         # Build sections
-        sections = []
+        queue_section = self._build_queue_section()
+        services_section = self._build_services_section()
+        events_section = self._build_events_section()
+        controls_section = self._build_controls_section()
         
-        # Queue section
-        sections.append(self._build_queue_section())
-        
-        # Services section
-        sections.append(self._build_services_section())
-        
-        # Events section
-        sections.append(self._build_events_section())
-        
-        # Controls section
-        sections.append(self._build_controls_section())
+        # Check if we should show debug info (blocked work)
+        show_debug = len(s.blocked_info) > 0 and s.running == 0 and s.queued > 0
         
         # Combine into layout
         layout = Layout()
-        layout.split_column(
-            Layout(name="queue", size=4),
-            Layout(name="services", size=3 + len(s.services)),
-            Layout(name="events", size=6),
-            Layout(name="controls", size=3),
-        )
         
-        layout["queue"].update(sections[0])
-        layout["services"].update(sections[1])
-        layout["events"].update(sections[2])
-        layout["controls"].update(sections[3])
+        if show_debug:
+            debug_section = self._build_debug_section()
+            layout.split_column(
+                Layout(name="queue", size=4),
+                Layout(name="services", size=3 + len(s.services)),
+                Layout(name="debug", size=2 + min(len(s.blocked_info), 4)),
+                Layout(name="events", size=6),
+                Layout(name="controls", size=3),
+            )
+            layout["queue"].update(queue_section)
+            layout["services"].update(services_section)
+            layout["debug"].update(debug_section)
+            layout["events"].update(events_section)
+            layout["controls"].update(controls_section)
+        else:
+            layout.split_column(
+                Layout(name="queue", size=4),
+                Layout(name="services", size=3 + len(s.services)),
+                Layout(name="events", size=6),
+                Layout(name="controls", size=3),
+            )
+            layout["queue"].update(queue_section)
+            layout["services"].update(services_section)
+            layout["events"].update(events_section)
+            layout["controls"].update(controls_section)
         
         return Panel(
             layout,
             title="[bold cyan]runcue-sim[/bold cyan]",
             border_style="cyan",
         )
+    
+    def _build_debug_section(self) -> Panel:
+        """Build debug panel showing why work is blocked."""
+        s = self.state
+        
+        table = Table(box=None, expand=True, padding=(0, 1), show_header=False)
+        table.add_column("Task", width=15)
+        table.add_column("Reason", width=12)
+        table.add_column("Details", ratio=1)
+        
+        for item in s.blocked_info[:4]:  # Show first 4
+            work = item.get("work")
+            reason = item.get("reason", "unknown")
+            details = item.get("details", "")
+            
+            task_name = work.task if work else "?"
+            
+            # Color code reason
+            if reason == "not_ready":
+                reason_styled = f"[yellow]{reason}[/yellow]"
+            elif reason == "service_full":
+                reason_styled = f"[blue]{reason}[/blue]"
+            else:
+                reason_styled = f"[red]{reason}[/red]"
+            
+            table.add_row(f"[bold]{task_name}[/bold]", reason_styled, f"[dim]{details[:50]}[/dim]")
+        
+        if len(s.blocked_info) > 4:
+            table.add_row("", "", f"[dim]... and {len(s.blocked_info) - 4} more[/dim]")
+        
+        return Panel(table, title="[bold yellow]⚠ Blocked Work[/bold yellow]", border_style="yellow")
     
     def _build_queue_section(self) -> Panel:
         """Build queue stats panel matching design spec."""
@@ -242,38 +309,41 @@ class SimulatorDisplay:
         s = self.state
         
         table = Table(box=None, expand=True, padding=(0, 1), show_header=False)
-        table.add_column("Service", width=12)
-        table.add_column("Concurrent", width=24)
-        table.add_column("Rate", width=12, justify="center")
-        table.add_column("Status", width=10, justify="center")
+        table.add_column("Service", width=14)
+        table.add_column("Concurrent", width=22)
+        table.add_column("Processed", width=12, justify="right")
+        table.add_column("Throughput", width=10, justify="right")
+        table.add_column("Status", width=8, justify="center")
         
         for name, svc in s.services.items():
             # Concurrent bar
             if svc.max_concurrent:
                 pct = svc.current_concurrent / svc.max_concurrent
-                bar = self._progress_bar(pct, 10)
-                concurrent = f"{bar} {svc.current_concurrent}/{svc.max_concurrent} concurrent"
+                bar = self._progress_bar(pct, 8)
+                concurrent = f"{bar} {svc.current_concurrent}/{svc.max_concurrent}"
             else:
                 concurrent = "[dim]—[/dim]"
             
-            # Rate display
-            if svc.rate_limit and svc.rate_window:
-                rate = f"{svc.current_rate}/{svc.rate_limit}"
-            else:
-                rate = "[dim]—[/dim]"
+            # Processed count
+            processed = f"[green]{svc.total_completed}[/green]"
+            if svc.total_failed > 0:
+                processed += f"/[red]{svc.total_failed}[/red]"
+            
+            # Throughput
+            throughput = f"{svc.throughput:.1f}/s"
             
             # Status indicator
             if svc.circuit_state == "closed":
-                status = "[green]● OK[/green]"
+                status = "[green]●[/green]"
             elif svc.circuit_state == "open":
-                status = "[red]● OPEN[/red]"
+                status = "[red]●[/red]"
             else:
-                status = "[yellow]◐ HALF[/yellow]"
+                status = "[yellow]◐[/yellow]"
             
-            table.add_row(f"[bold]{name}[/bold]", concurrent, rate, status)
+            table.add_row(f"[bold]{name}[/bold]", concurrent, processed, throughput, status)
         
         if not s.services:
-            table.add_row("[dim]No services configured[/dim]", "", "", "")
+            table.add_row("[dim]No services configured[/dim]", "", "", "", "")
         
         return Panel(table, title="[bold]Services[/bold]", border_style="blue")
     

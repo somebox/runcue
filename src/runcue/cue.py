@@ -671,3 +671,52 @@ class Cue:
         
         # Already completed/failed/cancelled
         return False
+    
+    def debug_blocked(self) -> list[dict[str, Any]]:
+        """
+        Get diagnostic info about why queued work is blocked.
+        
+        Returns a list of dicts with:
+        - work: The WorkUnit
+        - reason: Why it's blocked ('not_ready', 'service_full', 'unknown_task')
+        - details: Additional context
+        
+        Example:
+            for item in cue.debug_blocked():
+                print(f"{item['work'].task}: {item['reason']} - {item['details']}")
+        """
+        blocked = []
+        
+        for work in self._queue:
+            reason = "unknown"
+            details = ""
+            
+            # Check task registration
+            task_type = self._tasks.get(work.task)
+            if task_type is None:
+                reason = "unknown_task"
+                details = f"Task '{work.task}' not registered"
+                blocked.append({"work": work, "reason": reason, "details": details})
+                continue
+            
+            # Check is_ready
+            if not self._check_is_ready(work):
+                reason = "not_ready"
+                details = f"is_ready returned False for {work.task}(params={work.params})"
+                blocked.append({"work": work, "reason": reason, "details": details})
+                continue
+            
+            # Check service capacity
+            service_name = task_type.service
+            if service_name and not self._can_dispatch(service_name):
+                reason = "service_full"
+                svc = self._services.get(service_name)
+                if svc:
+                    active = len(self._service_active.get(service_name, set()))
+                    details = f"Service '{service_name}' at capacity ({active}/{svc.concurrent})"
+                else:
+                    details = f"Service '{service_name}' not configured"
+                blocked.append({"work": work, "reason": reason, "details": details})
+                continue
+        
+        return blocked

@@ -33,18 +33,91 @@ def configure_logging(verbose: bool = False) -> None:
         runcue_logger.setLevel(logging.CRITICAL)
 
 
-async def run_with_display(config: SimConfig, use_tui: bool = True) -> None:
-    """Run simulation with visual display."""
+async def run_with_display(config: SimConfig, use_tui: bool = True, verbose: bool = False) -> None:
+    """Run simulation with visual display.
+    
+    Args:
+        config: Simulation configuration
+        use_tui: Use Rich TUI display (default True)
+        verbose: Print event log instead of status updates (implies no-tui)
+    """
     state = SimulationState()
+    
+    # Verbose mode: print each event as it happens
+    if verbose:
+        from datetime import datetime
+        
+        # Wrap state.add_event to also print to console
+        original_add_event = state.add_event
+        
+        def logging_add_event(event_type: str, work_id: str, task_type: str | None = None, details: str = "") -> None:
+            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            task_str = f"[{task_type}]" if task_type else ""
+            
+            # Color-code by event type
+            if event_type == "completed":
+                symbol = "✓"
+            elif event_type == "failed":
+                symbol = "✗"
+            elif event_type == "started":
+                symbol = "▶"
+            elif event_type == "queued":
+                symbol = "+"
+            elif event_type == "invalidated":
+                symbol = "⟳"
+            else:
+                symbol = "·"
+            
+            print(f"{ts} {symbol} {event_type:<12} {task_str:<16} {work_id:<20} {details}")
+            
+            # Also add to state for final stats
+            original_add_event(event_type, work_id, task_type, details)
+        
+        # Patch state.add_event
+        state.add_event = logging_add_event  # type: ignore
+    
     runner = SimulationRunner(config, state)
     
-    if use_tui and RICH_AVAILABLE:
+    if verbose:
+        # Verbose log mode - print header then let events stream
+        print(f"\n🚀 runcue-sim [verbose]")
+        print(f"   Scenario: {config.scenario}, Count: {config.count}")
+        print(f"   Latency: {config.latency_ms}ms ±{int(config.latency_jitter*100)}%, Error: {config.error_rate * 100:.0f}%")
+        print()
+        print(f"{'TIME':<12} {'':1} {'EVENT':<12} {'TASK':<16} {'WORK_ID':<20} DETAILS")
+        print("-" * 80)
+        
+        try:
+            await runner.run()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            runner.stop()
+        finally:
+            await runner.cleanup()
+        
+        print("-" * 80)
+        print_final_summary(state)
+    
+    elif use_tui and RICH_AVAILABLE:
         # Rich TUI display
         display = SimulatorDisplay(state)
+        stall_counter = 0
+        last_completed = 0
         
         async def update_loop():
-            """Background task to refresh display."""
+            """Background task to refresh display and detect stalls."""
+            nonlocal stall_counter, last_completed
             while True:
+                # Detect stalls: nothing completing but work queued
+                if state.completed == last_completed and state.queued > 0 and state.running == 0:
+                    stall_counter += 1
+                    # After ~2 seconds of stall, check for blocked work
+                    if stall_counter > 20:
+                        state.blocked_info = runner.debug_blocked()
+                else:
+                    stall_counter = 0
+                    state.blocked_info = []
+                last_completed = state.completed
+                
                 display.refresh()
                 await asyncio.sleep(0.1)
         
@@ -73,10 +146,36 @@ async def run_with_display(config: SimConfig, use_tui: bool = True) -> None:
         print(f"   Count: {config.count}, Latency: {config.latency_ms}ms, Error: {config.error_rate * 100:.0f}%")
         print()
         
+        stall_counter = 0
+        last_completed = 0
+        
         async def update_loop():
-            """Print progress periodically."""
+            """Print progress periodically and detect stalls."""
+            nonlocal stall_counter, last_completed
             while True:
                 print_simple_stats(state)
+                
+                # Detect stalls
+                if state.completed == last_completed and state.queued > 0 and state.running == 0:
+                    stall_counter += 1
+                    if stall_counter > 4:  # After 2 seconds
+                        blocked = runner.debug_blocked()
+                        if blocked:
+                            print(f"\n⚠️  Stall detected! {len(blocked)} work items blocked:")
+                            for item in blocked[:5]:
+                                work = item.get("work")
+                                task = work.task if work else "?"
+                                reason = item.get("reason", "?")
+                                details = item.get("details", "")[:60]
+                                print(f"    {task}: {reason} - {details}")
+                            if len(blocked) > 5:
+                                print(f"    ... and {len(blocked) - 5} more")
+                            print()
+                            stall_counter = 0  # Reset to avoid spam
+                else:
+                    stall_counter = 0
+                last_completed = state.completed
+                
                 await asyncio.sleep(0.5)
         
         update_task = asyncio.create_task(update_loop())
@@ -136,8 +235,23 @@ Examples:
   runcue-sim --count 100 --latency 50
   runcue-sim --count 1000 --latency 10 --concurrent 10
   runcue-sim --count 50 --error-rate 0.2 --duration 30
-  runcue-sim --count 100 --tui  # Full TUI display (requires rich)
+  runcue-sim --scenario fanout --count 5
+  runcue-sim --scenario pipeline --count 10
+  runcue-sim --list-scenarios
         """,
+    )
+    
+    # Scenario options
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default="single_queue",
+        help="Scenario to run (default: single_queue)",
+    )
+    parser.add_argument(
+        "--list-scenarios",
+        action="store_true",
+        help="List available scenarios and exit",
     )
     
     parser.add_argument(
@@ -201,12 +315,6 @@ Examples:
         help="Submit rate (work/second), None = batch (default: batch)",
     )
     parser.add_argument(
-        "--db",
-        type=str,
-        default=":memory:",
-        help="Database path (default: :memory:)",
-    )
-    parser.add_argument(
         "--tui",
         action="store_true",
         help="Use full TUI display (requires rich)",
@@ -219,10 +327,19 @@ Examples:
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Show detailed logs (debug mode)",
+        help="Print event log instead of status updates (no-tui)",
     )
     
     args = parser.parse_args()
+    
+    # Handle --list-scenarios
+    if args.list_scenarios:
+        from runcue_sim.scenarios import list_scenarios
+        print("\nAvailable scenarios:\n")
+        for info in list_scenarios():
+            print(f"  {info.name:<15} {info.description}")
+        print()
+        sys.exit(0)
     
     # Configure logging early
     configure_logging(verbose=args.verbose)
@@ -253,10 +370,10 @@ Examples:
         outlier_multiplier=args.outlier_mult,
         error_rate=args.error_rate,
         duration=args.duration,
-        db_path=args.db,
         max_concurrent=args.concurrent,
         rate_limit=rate_limit,
         submit_rate=args.submit_rate,
+        scenario=args.scenario,
     )
     
     # Run with proper interrupt handling
@@ -275,7 +392,7 @@ Examples:
             loop.add_signal_handler(sig, handle_signal)
         
         # Create task for main work
-        main_task = asyncio.create_task(run_with_display(config, use_tui=use_tui))
+        main_task = asyncio.create_task(run_with_display(config, use_tui=use_tui, verbose=args.verbose))
         stop_task = asyncio.create_task(stop_event.wait())
         
         # Wait for either completion or interrupt
