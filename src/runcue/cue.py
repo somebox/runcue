@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+import uuid
 from typing import Any, Callable
 
 from runcue.models import TaskType, WorkState, WorkUnit
@@ -46,9 +48,10 @@ class Cue:
         self._on_skip_callback: Callable | None = None
         self._on_start_callback: Callable | None = None
         
-        # In-memory work queue (to be implemented in Phase 1)
-        self._queue: list[WorkUnit] = []
-        self._active: dict[str, WorkUnit] = {}
+        # In-memory work storage
+        self._queue: list[WorkUnit] = []              # Pending work
+        self._active: dict[str, WorkUnit] = {}        # Running work
+        self._completed: dict[str, WorkUnit] = {}     # Completed/failed/cancelled
         
         # Rate limit tracking (to be implemented in Phase 3)
         self._service_active: dict[str, set[str]] = {}
@@ -130,13 +133,17 @@ class Cue:
         Args:
             name: Unique task identifier.
             uses: Service name this task requires.
-            retry: Maximum attempts before failing.
+            retry: Maximum attempts (reserved for future use).
         
         Example:
-            @cue.task("extract", uses="openai", retry=3)
+            @cue.task("extract", uses="openai")
             def extract(work):
                 return {"text": call_api(work.params["input"])}
         """
+        # Validate service exists if specified
+        if uses is not None and uses not in self._services:
+            raise ValueError(f"Unknown service: {uses}")
+        
         def decorator(func):
             self._tasks[name] = TaskType(
                 name=name,
@@ -224,13 +231,12 @@ class Cue:
         """
         Decorator to register failure callback.
         
-        Called after failure with (work, error, will_retry).
+        Called after failure with (work, error).
         
         Example:
             @cue.on_failure
-            def on_failure(work, error, will_retry):
-                if not will_retry:
-                    alerting.send(f"Failed: {work.task}")
+            def on_failure(work, error):
+                alerting.send(f"Failed: {work.task} - {error}")
         """
         self._on_failure_callback = func
         return func
@@ -300,14 +306,47 @@ class Cue:
             
         Returns:
             Work unit ID.
+            
+        Raises:
+            ValueError: If task is not registered.
         """
-        # TODO: Implement in Phase 1
-        raise NotImplementedError("submit() not yet implemented")
+        if task not in self._tasks:
+            raise ValueError(f"Unknown task: {task}")
+        
+        work_id = uuid.uuid4().hex[:12]
+        work = WorkUnit(
+            id=work_id,
+            task=task,
+            params=params or {},
+            state=WorkState.PENDING,
+            created_at=time.time(),
+        )
+        self._queue.append(work)
+        return work_id
     
     async def get(self, work_id: str) -> WorkUnit | None:
-        """Get a work unit by ID."""
-        # TODO: Implement in Phase 1
-        raise NotImplementedError("get() not yet implemented")
+        """
+        Get a work unit by ID.
+        
+        Searches pending queue, active work, and completed work.
+        
+        Returns:
+            WorkUnit if found, None otherwise.
+        """
+        # Check pending queue
+        for work in self._queue:
+            if work.id == work_id:
+                return work
+        
+        # Check active work
+        if work_id in self._active:
+            return self._active[work_id]
+        
+        # Check completed work
+        if work_id in self._completed:
+            return self._completed[work_id]
+        
+        return None
     
     async def list(
         self,
@@ -316,6 +355,59 @@ class Cue:
         task: str | None = None,
         limit: int = 100,
     ) -> list[WorkUnit]:
-        """List work units with optional filters."""
-        # TODO: Implement in Phase 1
-        raise NotImplementedError("list() not yet implemented")
+        """
+        List work units with optional filters.
+        
+        Args:
+            state: Filter by work state.
+            task: Filter by task type name.
+            limit: Maximum number of results.
+            
+        Returns:
+            List of matching work units.
+        """
+        # Collect all work from all storage
+        all_work: list[WorkUnit] = []
+        all_work.extend(self._queue)
+        all_work.extend(self._active.values())
+        all_work.extend(self._completed.values())
+        
+        # Apply filters
+        result = []
+        for work in all_work:
+            if state is not None and work.state != state:
+                continue
+            if task is not None and work.task != task:
+                continue
+            result.append(work)
+            if len(result) >= limit:
+                break
+        
+        return result
+    
+    async def cancel(self, work_id: str) -> bool:
+        """
+        Cancel a work unit.
+        
+        Args:
+            work_id: ID of work to cancel.
+            
+        Returns:
+            True if work was cancelled, False if not found or already completed.
+        """
+        # Check pending queue
+        for i, work in enumerate(self._queue):
+            if work.id == work_id:
+                work.state = WorkState.CANCELLED
+                work.completed_at = time.time()
+                self._queue.pop(i)
+                self._completed[work_id] = work
+                return True
+        
+        # TODO: Handle cancelling running work in Phase 2
+        # For now, can't cancel active work
+        if work_id in self._active:
+            return False
+        
+        # Already completed/failed/cancelled
+        return False

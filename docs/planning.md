@@ -97,12 +97,12 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 
 ## Current Status
 
-**Phase 0: Complete** — 13 tests passing
+**Phase 1: Complete** — 28 tests passing
 
 | Phase | Status | Tests |
 |-------|--------|-------|
 | Phase 0: Project Setup | ✓ Complete | 13 |
-| Phase 1: Data Models | Pending | — |
+| Phase 1: Data Models | ✓ Complete | 15 |
 | Phase 2: Basic Execution | Pending | — |
 
 ---
@@ -136,7 +136,7 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 
 ---
 
-## Phase 1: Data Models (In-Memory)
+## Phase 1: Data Models (In-Memory) ✓
 
 **Goal**: Define core data structures. In-memory queue, no persistence.
 
@@ -175,13 +175,13 @@ self._completed: dict[str, WorkUnit] = {}  # Completed/failed/cancelled
 
 ### Tasks
 
-- [ ] Implement `submit()` — create work, add to queue
-- [ ] Implement `get()` — retrieve work by ID
-- [ ] Implement `list()` — query work by state/task
-- [ ] Implement `cancel()` — cancel pending or running work
-- [ ] Generate unique work IDs
-- [ ] Validate task exists on submit
-- [ ] Validate service exists on task registration
+- [x] Implement `submit()` — create work, add to queue
+- [x] Implement `get()` — retrieve work by ID
+- [x] Implement `list()` — query work by state/task
+- [x] Implement `cancel()` — cancel pending or running work
+- [x] Generate unique work IDs
+- [x] Validate task exists on submit
+- [x] Validate service exists on task registration
 
 ### Tests
 
