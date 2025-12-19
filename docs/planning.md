@@ -485,19 +485,70 @@ async def test_rate_limit_throttles():
 
 ## Phase 4: Readiness Callback
 
-**Goal**: `@cue.is_ready` gates work execution.
+**Goal**: `@cue.is_ready` gates work execution based on input availability.
+
+### Context
+
+The `is_ready` callback lets the client tell runcue whether a work unit's inputs are valid. This enables dependency chains without explicit task linking—work waits until its inputs exist.
+
+```python
+@cue.is_ready
+def is_ready(work) -> bool:
+    if work.task == "process_page":
+        # Wait until the page image exists
+        return Path(work.params["page_path"]).exists()
+    return True  # Default: always ready
+```
 
 ### Tasks
 
-- [ ] Call `is_ready(work)` before dispatch
-- [ ] Work stays pending if `is_ready` returns `False`
-- [ ] Periodic recheck of pending work
-- [ ] Handle `is_ready` exceptions (log, treat as not ready)
+- [ ] Call `is_ready(work)` before dispatch in `_run_orchestrator()`
+- [ ] If no callback registered, default to `True` (always ready)
+- [ ] Work stays in queue if `is_ready` returns `False`
+- [ ] Handle `is_ready` exceptions (log warning, treat as not ready)
+- [ ] Work is rechecked each orchestrator loop iteration
+
+### Implementation Hints
+
+**Note**: The `@cue.is_ready` decorator and `_is_ready_callback` storage already exist in `cue.py`—only the dispatch logic needs to be added.
+
+In `_run_orchestrator()`, add the is_ready check after getting the task_type:
+
+```python
+for work in self._queue:
+    task_type = self._tasks.get(work.task)
+    if task_type is None:
+        remaining.append(work)
+        continue
+    
+    # NEW: Check if work is ready
+    if not self._check_is_ready(work):
+        remaining.append(work)
+        continue
+    
+    service_name = task_type.service
+    # ... rest of dispatch logic
+```
+
+Add helper method:
+
+```python
+def _check_is_ready(self, work: WorkUnit) -> bool:
+    """Check if work is ready to run. Returns True if no callback registered."""
+    if self._is_ready_callback is None:
+        return True
+    try:
+        return bool(self._is_ready_callback(work))
+    except Exception as e:
+        # Log warning, treat as not ready
+        return False
+```
 
 ### Tests
 
 ```python
 async def test_is_ready_blocks_work():
+    """Work stays pending until is_ready returns True."""
     cue = runcue.Cue()
     cue.service("api", rate="100/min")
     
@@ -519,14 +570,34 @@ async def test_is_ready_blocks_work():
     assert work.state == WorkState.PENDING  # Blocked
     
     ready_flag = True
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(0.15)
     
     work = await cue.get(work_id)
     assert work.state == WorkState.COMPLETED  # Now runs
     
     await cue.stop()
 
+async def test_no_is_ready_callback_allows_all():
+    """Without is_ready callback, all work runs immediately."""
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        return {}
+    
+    # No @cue.is_ready registered
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    work = await cue.get(work_id)
+    assert work.state == WorkState.COMPLETED
+
 async def test_is_ready_exception_treated_as_not_ready():
+    """Exceptions in is_ready are caught; work stays pending."""
     cue = runcue.Cue()
     cue.service("api", rate="100/min")
     
@@ -546,21 +617,119 @@ async def test_is_ready_exception_treated_as_not_ready():
     assert work.state == WorkState.PENDING  # Not run due to exception
     
     await cue.stop()
+
+async def test_is_ready_checked_per_work():
+    """is_ready is called for each work unit independently."""
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    ready_keys = set()
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        return {}
+    
+    @cue.is_ready
+    def is_ready(work):
+        return work.params.get("key") in ready_keys
+    
+    cue.start()
+    
+    # Submit two work units
+    id1 = await cue.submit("task", params={"key": "a"})
+    id2 = await cue.submit("task", params={"key": "b"})
+    await asyncio.sleep(0.1)
+    
+    # Both should be pending
+    assert (await cue.get(id1)).state == WorkState.PENDING
+    assert (await cue.get(id2)).state == WorkState.PENDING
+    
+    # Make only "a" ready
+    ready_keys.add("a")
+    await asyncio.sleep(0.15)
+    
+    # Only id1 should complete
+    assert (await cue.get(id1)).state == WorkState.COMPLETED
+    assert (await cue.get(id2)).state == WorkState.PENDING
+    
+    await cue.stop()
 ```
 
 ---
 
 ## Phase 5: Staleness Callback
 
-**Goal**: `@cue.is_stale` skips work when output exists.
+**Goal**: `@cue.is_stale` skips work when output already exists/is valid.
+
+### Context
+
+The `is_stale` callback lets the client tell runcue whether a work unit's output needs to be (re)generated. If the output is fresh, the work is skipped without running the handler.
+
+```python
+@cue.is_stale
+def is_stale(work) -> bool:
+    if work.task == "extract_text":
+        output = work.params["image_path"].replace(".png", ".txt")
+        return not Path(output).exists()  # Stale if output missing
+    return True  # Default: always stale (run if ready)
+```
 
 ### Tasks
 
-- [ ] After `is_ready` passes, check `is_stale`
-- [ ] If `is_stale` returns `False`, skip work (don't run handler)
+- [ ] After `is_ready` passes, check `is_stale` in `_run_orchestrator()`
+- [ ] If `is_stale` returns `False`, skip work (don't run handler, don't track in service)
 - [ ] Emit `on_skip` callback for skipped work
-- [ ] Default: always stale (always run if ready)
-- [ ] Handle `is_stale` exceptions (log, treat as stale)
+- [ ] If no callback registered, default to `True` (always stale, always run)
+- [ ] Handle `is_stale` exceptions (log warning, treat as stale—run the work)
+
+### Implementation Hints
+
+**Note**: The `@cue.is_stale` decorator and `_is_stale_callback` storage already exist in `cue.py`—only the dispatch logic needs to be added.
+
+In `_run_orchestrator()`, after the is_ready check:
+
+```python
+# Check if work is ready
+if not self._check_is_ready(work):
+    remaining.append(work)
+    continue
+
+# NEW: Check if work is stale (needs to run)
+if not self._check_is_stale(work):
+    # Skip this work - output is already valid
+    self._skip_work(work)
+    continue
+
+service_name = task_type.service
+# ... rest of dispatch logic
+```
+
+Add helper methods:
+
+```python
+def _check_is_stale(self, work: WorkUnit) -> bool:
+    """Check if work output is stale. Returns True if no callback registered."""
+    if self._is_stale_callback is None:
+        return True  # Default: always stale, always run
+    try:
+        return bool(self._is_stale_callback(work))
+    except Exception as e:
+        # Log warning, treat as stale (run the work)
+        return True
+
+def _skip_work(self, work: WorkUnit) -> None:
+    """Skip work unit without running handler."""
+    work.state = WorkState.COMPLETED  # Mark as completed (output valid)
+    work.completed_at = time.time()
+    self._completed[work.id] = work
+    
+    # Emit on_skip callback
+    if self._on_skip_callback:
+        try:
+            self._on_skip_callback(work)
+        except Exception:
+            pass  # Don't let callback errors affect flow
+```
 
 ### Tests
 
@@ -596,7 +765,53 @@ async def test_is_stale_skips_work():
     
     await cue.stop()
 
+async def test_no_is_stale_callback_runs_all():
+    """Without is_stale callback, all ready work runs."""
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    executed = []
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        executed.append(work.id)
+        return {}
+    
+    # No @cue.is_stale registered
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    assert work_id in executed
+
+async def test_is_stale_exception_treated_as_stale():
+    """Exceptions in is_stale are caught; work runs (treat as stale)."""
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    executed = []
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        executed.append(work.id)
+        return {}
+    
+    @cue.is_stale
+    def is_stale(work):
+        raise RuntimeError("check failed")
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    # Work should run despite exception (exception = treat as stale)
+    assert work_id in executed
+
 async def test_on_skip_called():
+    """on_skip callback fires when work is skipped."""
     cue = runcue.Cue()
     cue.service("api", rate="100/min")
     
@@ -620,6 +835,28 @@ async def test_on_skip_called():
     await cue.stop()
     
     assert work_id in skipped
+
+async def test_skipped_work_marked_completed():
+    """Skipped work should have COMPLETED state and completed_at timestamp."""
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        return {}
+    
+    @cue.is_stale
+    def is_stale(work):
+        return False  # Not stale, should skip
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    work = await cue.get(work_id)
+    assert work.state == WorkState.COMPLETED
+    assert work.completed_at is not None
 ```
 
 ---
