@@ -97,13 +97,14 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 
 ## Current Status
 
-**Phase 1: Complete** — 28 tests passing
+**Phase 2: Complete** — 41 tests passing
 
 | Phase | Status | Tests |
 |-------|--------|-------|
 | Phase 0: Project Setup | ✓ Complete | 13 |
 | Phase 1: Data Models | ✓ Complete | 15 |
-| Phase 2: Basic Execution | Pending | — |
+| Phase 2: Basic Execution | ✓ Complete | 13 |
+| Phase 3: Rate Limiting | Pending | — |
 
 ---
 
@@ -239,19 +240,19 @@ def test_task_unknown_service_raises():
 
 ---
 
-## Phase 2: Basic Execution
+## Phase 2: Basic Execution ✓
 
 **Goal**: Execute work. All pending work runs (no readiness checks yet).
 
 ### Tasks
 
-- [ ] Implement orchestrator loop (background asyncio task)
-- [ ] `cue.start()` — non-blocking, starts loop
-- [ ] `await cue.stop(timeout=None)` — graceful shutdown with optional timeout
-- [ ] Pick pending work, call handler, update state
-- [ ] Support both sync and async handlers
-- [ ] Handle exceptions (mark failed)
-- [ ] Implement `cancel()` — mark work as cancelled
+- [x] Implement orchestrator loop (background asyncio task)
+- [x] `cue.start()` — non-blocking, starts loop
+- [x] `await cue.stop(timeout=None)` — graceful shutdown with optional timeout
+- [x] Pick pending work, call handler, update state
+- [x] Support both sync and async handlers
+- [x] Handle exceptions (mark failed)
+- [x] `cancel()` already implemented in Phase 1
 
 ### Lifecycle
 

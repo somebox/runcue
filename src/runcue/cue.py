@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
 import uuid
 from typing import Any, Callable
@@ -59,6 +61,8 @@ class Cue:
         
         # Orchestrator state
         self._running = False
+        self._orchestrator_task: asyncio.Task | None = None
+        self._work_tasks: dict[str, asyncio.Task] = {}  # work_id -> task
     
     # --- Service Registration ---
     
@@ -277,17 +281,115 @@ class Cue:
         
         Non-blocking - starts scheduling as a background asyncio task.
         """
-        # TODO: Implement in Phase 2
+        if self._running:
+            return
+        
         self._running = True
+        # Get the current event loop and create the orchestrator task
+        loop = asyncio.get_event_loop()
+        self._orchestrator_task = loop.create_task(self._run_orchestrator())
     
-    async def stop(self) -> None:
+    async def stop(self, timeout: float | None = None) -> None:
         """
         Stop the orchestrator gracefully.
         
-        Waits for currently running work to complete.
+        Args:
+            timeout: Max seconds to wait for running work. None = wait forever.
+        
+        Waits for currently running work to complete, or until timeout.
         """
-        # TODO: Implement in Phase 2
         self._running = False
+        
+        # Cancel the orchestrator loop
+        if self._orchestrator_task is not None:
+            self._orchestrator_task.cancel()
+            try:
+                await self._orchestrator_task
+            except asyncio.CancelledError:
+                pass
+            self._orchestrator_task = None
+        
+        # Wait for active work to complete
+        if self._work_tasks:
+            tasks = list(self._work_tasks.values())
+            if timeout is not None:
+                # Wait with timeout
+                done, pending = await asyncio.wait(
+                    tasks,
+                    timeout=timeout,
+                    return_when=asyncio.ALL_COMPLETED
+                )
+                # Cancel any tasks that didn't complete
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            else:
+                # Wait forever
+                await asyncio.gather(*tasks, return_exceptions=True)
+        
+        self._work_tasks.clear()
+    
+    async def _run_orchestrator(self) -> None:
+        """Background loop that dispatches pending work."""
+        while self._running:
+            # Check for pending work
+            if self._queue:
+                work = self._queue.pop(0)
+                
+                # Move to active
+                work.state = WorkState.RUNNING
+                work.started_at = time.time()
+                self._active[work.id] = work
+                
+                # Create task to execute work
+                task = asyncio.create_task(self._execute_work(work))
+                self._work_tasks[work.id] = task
+            
+            # Small sleep to avoid busy loop
+            await asyncio.sleep(0.01)
+    
+    async def _execute_work(self, work: WorkUnit) -> None:
+        """Execute a single work unit."""
+        task_type = self._tasks.get(work.task)
+        if task_type is None or task_type.handler is None:
+            work.state = WorkState.FAILED
+            work.error = f"No handler for task: {work.task}"
+            work.completed_at = time.time()
+            self._active.pop(work.id, None)
+            self._completed[work.id] = work
+            self._work_tasks.pop(work.id, None)
+            return
+        
+        handler = task_type.handler
+        start_time = time.time()
+        
+        try:
+            # Call handler (sync or async)
+            if inspect.iscoroutinefunction(handler):
+                result = await handler(work)
+            else:
+                result = handler(work)
+            
+            # Success
+            duration = time.time() - start_time
+            work.state = WorkState.COMPLETED
+            work.result = result
+            work.completed_at = time.time()
+            
+        except Exception as e:
+            # Failure
+            work.state = WorkState.FAILED
+            work.error = str(e)
+            work.completed_at = time.time()
+        
+        finally:
+            # Move from active to completed
+            self._active.pop(work.id, None)
+            self._completed[work.id] = work
+            self._work_tasks.pop(work.id, None)
     
     # --- Work Operations ---
     
