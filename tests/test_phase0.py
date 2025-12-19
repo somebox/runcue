@@ -116,7 +116,29 @@ def test_on_failure_registration():
     cue = runcue.Cue()
     
     @cue.on_failure
-    def on_failure(work, error, will_retry):
+    def on_failure(work, error):
         pass
     
     assert cue._on_failure_callback is on_failure
+
+
+def test_on_skip_registration():
+    """Verify on_skip callback can be registered."""
+    cue = runcue.Cue()
+    
+    @cue.on_skip
+    def on_skip(work):
+        pass
+    
+    assert cue._on_skip_callback is on_skip
+
+
+def test_on_start_registration():
+    """Verify on_start callback can be registered."""
+    cue = runcue.Cue()
+    
+    @cue.on_start
+    def on_start(work):
+        pass
+    
+    assert cue._on_start_callback is on_start

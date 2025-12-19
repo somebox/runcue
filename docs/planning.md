@@ -30,16 +30,78 @@ Key callbacks the client provides:
 | `@cue.priority` | "How urgent is this?" | `float` 0.0-1.0 |
 | `@cue.on_complete` | (event) Work completed | — |
 | `@cue.on_failure` | (event) Work failed | — |
+| `@cue.on_skip` | (event) Work skipped (not stale) | — |
+| `@cue.on_start` | (event) Work starting | — |
+
+---
+
+## Design Clarifications
+
+### Stateless Design
+
+runcue tracks work state in-memory during execution, but **artifacts are the source of truth** for determining whether work needs to run:
+
+- `is_stale(work)` returns `False` → work is skipped (handler not called)
+- `on_skip` callback fires so clients can log/track if desired
+- No separate `SKIPPED` state—the artifact's existence/validity is what matters
+- On restart, resubmit work; `is_stale` will skip anything already complete
+
+### Work States
+
+```python
+class WorkState(Enum):
+    PENDING = "pending"     # Queued, waiting to run
+    RUNNING = "running"     # Handler currently executing
+    COMPLETED = "completed" # Handler returned successfully
+    FAILED = "failed"       # Handler raised exception
+    CANCELLED = "cancelled" # Stopped before completion
+```
+
+### Sync and Async Handlers
+
+Handlers may be sync or async. The orchestrator detects `inspect.iscoroutinefunction()` and awaits async handlers appropriately:
+
+```python
+# Sync handler
+@cue.task("fast", uses="local")
+def fast(work):
+    return {"done": True}
+
+# Async handler
+@cue.task("slow", uses="api")
+async def slow(work):
+    result = await external_api(work.params["url"])
+    return {"result": result}
+```
+
+### Submit Before Start
+
+Work can be submitted before `start()` is called. It queues and waits until the orchestrator starts:
+
+```python
+cue = runcue.Cue()
+# ... register tasks ...
+work_id = await cue.submit("task", params={})  # Queues immediately
+cue.start()  # Now work begins executing
+```
+
+### No Built-in Retry
+
+Retry logic is highly use-case dependent (backoff strategy, jitter, circuit breakers). Instead of building retry into runcue:
+
+- `on_failure` callback notifies clients of failures
+- Clients decide whether to resubmit (with their own delay/logic)
+- This keeps runcue simple and gives clients full control
 
 ---
 
 ## Current Status
 
-**Phase 0: Complete** — 11 tests passing
+**Phase 0: Complete** — 13 tests passing
 
 | Phase | Status | Tests |
 |-------|--------|-------|
-| Phase 0: Project Setup | ✓ Complete | 11 |
+| Phase 0: Project Setup | ✓ Complete | 13 |
 | Phase 1: Data Models | Pending | — |
 | Phase 2: Basic Execution | Pending | — |
 
@@ -56,7 +118,7 @@ Key callbacks the client provides:
 - [x] Create stub `Cue` class
 - [x] Basic test infrastructure
 
-### Tests (11 passing)
+### Tests (13 passing)
 
 - `test_import`
 - `test_cue_instantiation`
@@ -69,6 +131,8 @@ Key callbacks the client provides:
 - `test_priority_registration`
 - `test_on_complete_registration`
 - `test_on_failure_registration`
+- `test_on_skip_registration`
+- `test_on_start_registration`
 
 ---
 
@@ -84,19 +148,20 @@ class WorkUnit:
     id: str
     task: str           # Task type name
     params: dict        # All parameters
-    state: WorkState    # pending, running, completed, failed
+    state: WorkState    # pending, running, completed, failed, cancelled
     created_at: float
     started_at: float | None
     completed_at: float | None
     result: dict | None
     error: str | None
-    attempt: int        # Current attempt (1, 2, 3...)
+    attempt: int        # Always 1 (no built-in retry)
 
 class WorkState(Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 ```
 
 ### In-Memory Storage
@@ -105,6 +170,7 @@ class WorkState(Enum):
 # In Cue class
 self._queue: list[WorkUnit] = []           # Pending work
 self._active: dict[str, WorkUnit] = {}     # Running work
+self._completed: dict[str, WorkUnit] = {}  # Completed/failed/cancelled
 ```
 
 ### Tasks
@@ -112,7 +178,10 @@ self._active: dict[str, WorkUnit] = {}     # Running work
 - [ ] Implement `submit()` — create work, add to queue
 - [ ] Implement `get()` — retrieve work by ID
 - [ ] Implement `list()` — query work by state/task
+- [ ] Implement `cancel()` — cancel pending or running work
 - [ ] Generate unique work IDs
+- [ ] Validate task exists on submit
+- [ ] Validate service exists on task registration
 
 ### Tests
 
@@ -130,11 +199,42 @@ async def test_submit_returns_id():
 
 async def test_get_returns_work():
     cue = runcue.Cue()
-    # ... setup ...
+    cue.service("api", rate="60/min")
+    
+    @cue.task("process", uses="api")
+    def process(work):
+        return {}
+    
     work_id = await cue.submit("process", params={"x": 1})
     work = await cue.get(work_id)
     assert work.params == {"x": 1}
     assert work.state == WorkState.PENDING
+
+async def test_list_filters_by_state():
+    cue = runcue.Cue()
+    cue.service("api", rate="60/min")
+    
+    @cue.task("process", uses="api")
+    def process(work):
+        return {}
+    
+    await cue.submit("process", params={"x": 1})
+    await cue.submit("process", params={"x": 2})
+    
+    pending = await cue.list(state=WorkState.PENDING)
+    assert len(pending) == 2
+
+async def test_submit_unknown_task_raises():
+    cue = runcue.Cue()
+    with pytest.raises(ValueError, match="Unknown task"):
+        await cue.submit("nonexistent", params={})
+
+def test_task_unknown_service_raises():
+    cue = runcue.Cue()
+    with pytest.raises(ValueError, match="Unknown service"):
+        @cue.task("bad", uses="nonexistent")
+        def bad(work):
+            pass
 ```
 
 ---
@@ -147,9 +247,19 @@ async def test_get_returns_work():
 
 - [ ] Implement orchestrator loop (background asyncio task)
 - [ ] `cue.start()` — non-blocking, starts loop
-- [ ] `await cue.stop()` — graceful shutdown
+- [ ] `await cue.stop(timeout=None)` — graceful shutdown with optional timeout
 - [ ] Pick pending work, call handler, update state
+- [ ] Support both sync and async handlers
 - [ ] Handle exceptions (mark failed)
+- [ ] Implement `cancel()` — mark work as cancelled
+
+### Lifecycle
+
+```python
+cue.start()              # Start orchestrator (non-blocking)
+await cue.stop()         # Wait for running work to complete
+await cue.stop(timeout=5) # Wait up to 5 seconds, then abandon
+```
 
 ### Tests
 
@@ -173,6 +283,26 @@ async def test_work_executes():
     
     assert work_id in executed
 
+async def test_async_handler_works():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    executed = []
+    
+    @cue.task("async_task", uses="api")
+    async def async_task(work):
+        await asyncio.sleep(0.01)
+        executed.append(work.id)
+        return {"done": True}
+    
+    cue.start()
+    work_id = await cue.submit("async_task", params={})
+    
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    assert work_id in executed
+
 async def test_handler_exception_marks_failed():
     cue = runcue.Cue()
     cue.service("api", rate="100/min")
@@ -182,7 +312,7 @@ async def test_handler_exception_marks_failed():
         raise ValueError("oops")
     
     cue.start()
-    work_id = await cue.submit("failing")
+    work_id = await cue.submit("failing", params={})
     
     await asyncio.sleep(0.1)
     await cue.stop()
@@ -190,6 +320,89 @@ async def test_handler_exception_marks_failed():
     work = await cue.get(work_id)
     assert work.state == WorkState.FAILED
     assert "oops" in work.error
+
+async def test_stop_waits_for_running():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    completed = []
+    
+    @cue.task("slow", uses="api")
+    async def slow(work):
+        await asyncio.sleep(0.2)
+        completed.append(work.id)
+        return {}
+    
+    cue.start()
+    work_id = await cue.submit("slow", params={})
+    await asyncio.sleep(0.05)  # Let it start
+    await cue.stop()  # Should wait for completion
+    
+    assert work_id in completed
+
+async def test_stop_timeout_abandons():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    @cue.task("very_slow", uses="api")
+    async def very_slow(work):
+        await asyncio.sleep(10)
+        return {}
+    
+    cue.start()
+    await cue.submit("very_slow", params={})
+    await asyncio.sleep(0.05)
+    
+    start = time.time()
+    await cue.stop(timeout=0.1)
+    elapsed = time.time() - start
+    
+    assert elapsed < 1  # Didn't wait for the 10s task
+
+async def test_cancel_pending_work():
+    cue = runcue.Cue()
+    cue.service("api", concurrent=1, rate="100/min")
+    
+    @cue.task("task", uses="api")
+    async def task(work):
+        await asyncio.sleep(1)
+        return {}
+    
+    cue.start()
+    # Submit two - first will run, second will be pending
+    await cue.submit("task", params={})
+    work_id2 = await cue.submit("task", params={})
+    await asyncio.sleep(0.05)
+    
+    await cue.cancel(work_id2)
+    work = await cue.get(work_id2)
+    assert work.state == WorkState.CANCELLED
+    
+    await cue.stop(timeout=0.1)
+
+async def test_submit_before_start_queues():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    executed = []
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        executed.append(work.id)
+        return {}
+    
+    # Submit before start
+    work_id = await cue.submit("task", params={})
+    work = await cue.get(work_id)
+    assert work.state == WorkState.PENDING
+    assert work_id not in executed
+    
+    # Now start
+    cue.start()
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    assert work_id in executed
 ```
 
 ---
@@ -235,28 +448,35 @@ async def test_max_concurrent_respected():
     
     cue.start()
     for _ in range(10):
-        await cue.submit("slow")
+        await cue.submit("slow", params={})
     
     await asyncio.sleep(1)
     await cue.stop()
     
     assert max_running <= 2
 
-async def test_rate_limit_respected():
+async def test_rate_limit_throttles():
     cue = runcue.Cue()
-    cue.service("api", rate="5/sec", concurrent=10)
+    cue.service("api", rate="10/sec", concurrent=10)
     
-    # Submit 10, should take ~1 second (5 per sec)
+    timestamps = []
+    
+    @cue.task("record", uses="api")
+    def record(work):
+        timestamps.append(time.time())
+        return {}
+    
     cue.start()
-    for _ in range(10):
-        await cue.submit("task")
+    for _ in range(20):
+        await cue.submit("record", params={})
     
-    start = time.time()
-    await asyncio.sleep(2.5)
+    await asyncio.sleep(3)
     await cue.stop()
     
-    elapsed = time.time() - start
-    assert elapsed >= 1.5  # Rate limited
+    # Should take ~2 seconds for 20 at 10/sec
+    assert len(timestamps) == 20
+    duration = timestamps[-1] - timestamps[0]
+    assert duration >= 1.5  # At least 1.5s (some tolerance)
 ```
 
 ---
@@ -267,10 +487,10 @@ async def test_rate_limit_respected():
 
 ### Tasks
 
-- [ ] Register `@cue.is_ready` callback
 - [ ] Call `is_ready(work)` before dispatch
 - [ ] Work stays pending if `is_ready` returns `False`
 - [ ] Periodic recheck of pending work
+- [ ] Handle `is_ready` exceptions (log, treat as not ready)
 
 ### Tests
 
@@ -290,7 +510,7 @@ async def test_is_ready_blocks_work():
         return ready_flag
     
     cue.start()
-    work_id = await cue.submit("needs_flag")
+    work_id = await cue.submit("needs_flag", params={})
     await asyncio.sleep(0.1)
     
     work = await cue.get(work_id)
@@ -303,6 +523,27 @@ async def test_is_ready_blocks_work():
     assert work.state == WorkState.COMPLETED  # Now runs
     
     await cue.stop()
+
+async def test_is_ready_exception_treated_as_not_ready():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        return {}
+    
+    @cue.is_ready
+    def is_ready(work):
+        raise RuntimeError("check failed")
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    
+    work = await cue.get(work_id)
+    assert work.state == WorkState.PENDING  # Not run due to exception
+    
+    await cue.stop()
 ```
 
 ---
@@ -313,11 +554,11 @@ async def test_is_ready_blocks_work():
 
 ### Tasks
 
-- [ ] Register `@cue.is_stale` callback
 - [ ] After `is_ready` passes, check `is_stale`
-- [ ] If `is_stale` returns `False`, skip work (mark completed without running)
+- [ ] If `is_stale` returns `False`, skip work (don't run handler)
 - [ ] Emit `on_skip` callback for skipped work
-- [ ] Default: always stale (always run)
+- [ ] Default: always stale (always run if ready)
+- [ ] Handle `is_stale` exceptions (log, treat as stale)
 
 ### Tests
 
@@ -340,18 +581,43 @@ async def test_is_stale_skips_work():
     
     # First run: stale=True, should execute
     cue.start()
-    work_id = await cue.submit("extract")
+    work_id = await cue.submit("extract", params={})
     await asyncio.sleep(0.1)
     assert work_id in executed
     
     # Second run: stale=False, should skip
     stale = False
     executed.clear()
-    work_id2 = await cue.submit("extract")
+    work_id2 = await cue.submit("extract", params={})
     await asyncio.sleep(0.1)
     assert work_id2 not in executed
     
     await cue.stop()
+
+async def test_on_skip_called():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    skipped = []
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        return {}
+    
+    @cue.is_stale
+    def is_stale(work):
+        return False  # Not stale, should skip
+    
+    @cue.on_skip
+    def on_skip(work):
+        skipped.append(work.id)
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    assert work_id in skipped
 ```
 
 ---
@@ -363,8 +629,8 @@ async def test_is_stale_skips_work():
 ### Tasks
 
 - [ ] Implement `@cue.on_complete(work, result, duration)`
-- [ ] Implement `@cue.on_failure(work, error, will_retry)`
-- [ ] Implement `@cue.on_skip(work)`
+- [ ] Implement `@cue.on_failure(work, error)`
+- [ ] Implement `@cue.on_skip(work)` (already in Phase 5)
 - [ ] Implement `@cue.on_start(work)`
 - [ ] Track duration per work unit
 
@@ -386,7 +652,7 @@ async def test_on_complete_called():
         completions.append((work.id, result, duration))
     
     cue.start()
-    work_id = await cue.submit("task")
+    work_id = await cue.submit("task", params={})
     await asyncio.sleep(0.1)
     await cue.stop()
     
@@ -394,6 +660,50 @@ async def test_on_complete_called():
     assert completions[0][0] == work_id
     assert completions[0][1] == {"x": 1}
     assert completions[0][2] >= 0  # duration
+
+async def test_on_failure_called():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    failures = []
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        raise ValueError("boom")
+    
+    @cue.on_failure
+    def on_failure(work, error):
+        failures.append((work.id, str(error)))
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    assert len(failures) == 1
+    assert failures[0][0] == work_id
+    assert "boom" in failures[0][1]
+
+async def test_on_start_called():
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min")
+    
+    starts = []
+    
+    @cue.task("task", uses="api")
+    def task(work):
+        return {}
+    
+    @cue.on_start
+    def on_start(work):
+        starts.append(work.id)
+    
+    cue.start()
+    work_id = await cue.submit("task", params={})
+    await asyncio.sleep(0.1)
+    await cue.stop()
+    
+    assert work_id in starts
 ```
 
 ---
@@ -402,9 +712,18 @@ async def test_on_complete_called():
 
 **Goal**: `@cue.priority` controls scheduling order.
 
+### PriorityContext Model
+
+```python
+@dataclass
+class PriorityContext:
+    work: WorkUnit
+    wait_time: float      # Seconds since created_at
+    queue_depth: int      # Total pending work count
+```
+
 ### Tasks
 
-- [ ] Register `@cue.priority` callback
 - [ ] Provide context (work, wait_time, queue_depth)
 - [ ] Returns 0.0-1.0, higher runs first
 - [ ] Default: FIFO with starvation prevention
@@ -438,61 +757,100 @@ async def test_priority_ordering():
     await cue.stop()
     
     assert order[0] == "high"
-```
 
----
-
-## Phase 8: Retry
-
-**Goal**: Automatic retries with backoff.
-
-### Tasks
-
-- [ ] `retry=N` on task decorator
-- [ ] Exponential backoff between attempts
-- [ ] `work.attempt` tracks current attempt
-- [ ] After max attempts, mark failed permanently
-- [ ] `on_failure` receives `will_retry` flag
-
-### Tests
-
-```python
-async def test_retry_on_failure():
+async def test_priority_context_has_wait_time():
     cue = runcue.Cue()
-    cue.service("api", rate="100/min")
+    cue.service("api", concurrent=1, rate="100/min")
     
-    attempts = []
+    wait_times = []
     
-    @cue.task("flaky", uses="api", retry=3)
-    def flaky(work):
-        attempts.append(work.attempt)
-        if len(attempts) < 3:
-            raise ValueError("not yet")
-        return {"done": True}
+    @cue.task("task", uses="api")
+    async def task(work):
+        await asyncio.sleep(0.1)
+        return {}
+    
+    @cue.priority
+    def prioritize(ctx):
+        wait_times.append(ctx.wait_time)
+        return 0.5
     
     cue.start()
-    work_id = await cue.submit("flaky")
+    await cue.submit("task", params={})
+    await cue.submit("task", params={})
     
-    await asyncio.sleep(1)
+    await asyncio.sleep(0.5)
     await cue.stop()
     
-    assert len(attempts) == 3
-    work = await cue.get(work_id)
-    assert work.state == WorkState.COMPLETED
+    # Second task should have waited longer
+    assert len(wait_times) >= 2
 ```
 
 ---
 
-## Phase 9: Polish
+## Phase 8: Polish
 
 **Goal**: Complete API, edge cases.
 
 ### Tasks
 
 - [ ] Comprehensive error messages
-- [ ] Edge case handling
+- [ ] Edge case handling (empty queue, rapid start/stop)
 - [ ] Performance optimization
 - [ ] Documentation examples
+- [ ] Integration test with full pipeline
+
+### Integration Test
+
+```python
+async def test_full_pipeline():
+    """Integration test: submit → is_ready → is_stale → execute → callbacks."""
+    cue = runcue.Cue()
+    cue.service("api", rate="100/min", concurrent=2)
+    
+    artifacts = {}
+    events = []
+    
+    @cue.task("produce", uses="api")
+    def produce(work):
+        artifacts[work.params["key"]] = "data"
+        return {"key": work.params["key"]}
+    
+    @cue.task("consume", uses="api")
+    def consume(work):
+        return {"value": artifacts[work.params["key"]]}
+    
+    @cue.is_ready
+    def is_ready(work):
+        if work.task == "consume":
+            return work.params["key"] in artifacts
+        return True
+    
+    @cue.is_stale
+    def is_stale(work):
+        if work.task == "produce":
+            return work.params["key"] not in artifacts
+        return True
+    
+    @cue.on_complete
+    def on_complete(work, result, duration):
+        events.append(("complete", work.task))
+    
+    cue.start()
+    
+    # Submit consumer first (will wait for producer)
+    await cue.submit("consume", params={"key": "x"})
+    await asyncio.sleep(0.1)
+    assert len(events) == 0  # Blocked by is_ready
+    
+    # Submit producer
+    await cue.submit("produce", params={"key": "x"})
+    await asyncio.sleep(0.3)
+    
+    assert ("complete", "produce") in events
+    assert ("complete", "consume") in events
+    
+    await cue.stop()
+```
 
 ---
 
@@ -523,10 +881,7 @@ Rate Limiting    is_ready
          Phase 7: Priority
              │
              ▼
-         Phase 8: Retry
-             │
-             ▼
-         Phase 9: Polish
+         Phase 8: Polish
 ```
 
 ---
@@ -538,8 +893,7 @@ Rate Limiting    is_ready
 | **M1: Minimal** | 0-2 | Submit work, see it execute |
 | **M2: Controlled** | 3-5 | Rate limits, readiness, staleness |
 | **M3: Observable** | 6-7 | Callbacks, priority |
-| **M4: Resilient** | 8 | Retry |
-| **M5: Complete** | 9 | Polished, documented |
+| **M4: Complete** | 8 | Polished, documented |
 
 ---
 
@@ -549,4 +903,5 @@ Rate Limiting    is_ready
 - Tests written first, then implementation
 - No database — fully in-memory
 - Artifacts are the source of truth
+- No built-in retry — clients handle failures via callbacks
 - Community can add persistence via callbacks
