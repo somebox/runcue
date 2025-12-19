@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any, Callable
 
-from runcue.models import TaskType, WorkState, WorkUnit
+from runcue.models import PriorityContext, TaskType, WorkState, WorkUnit
 
 
 class Cue:
@@ -339,7 +339,15 @@ class Cue:
             to_dispatch = []
             remaining = []
             
-            for work in self._queue:
+            # Sort queue by priority (higher priority first)
+            queue_depth = len(self._queue)
+            sorted_queue = sorted(
+                self._queue,
+                key=lambda w: self._get_priority(w, queue_depth),
+                reverse=True  # Higher priority first
+            )
+            
+            for work in sorted_queue:
                 task_type = self._tasks.get(work.task)
                 if task_type is None:
                     remaining.append(work)
@@ -406,6 +414,27 @@ class Cue:
         except Exception:
             # Exception in callback = treat as stale (run the work)
             return True
+    
+    def _get_priority(self, work: WorkUnit, queue_depth: int) -> float:
+        """Get priority for work. Returns 0.5 if no callback registered."""
+        if self._priority_callback is None:
+            # Default: FIFO with starvation prevention
+            # Older items get slightly higher priority (max 0.9)
+            wait_time = time.time() - work.created_at
+            return min(0.3 + wait_time / 3600, 0.9)
+        
+        try:
+            ctx = PriorityContext(
+                work=work,
+                wait_time=time.time() - work.created_at,
+                queue_depth=queue_depth,
+            )
+            priority = float(self._priority_callback(ctx))
+            # Clamp to 0.0-1.0
+            return max(0.0, min(1.0, priority))
+        except Exception:
+            # Exception in callback = default priority
+            return 0.5
     
     def _skip_work(self, work: WorkUnit) -> None:
         """Skip work unit without running handler."""

@@ -41,3 +41,12 @@ class TaskType:
     service: str | None = None  # Service this task uses (single)
     handler: Any = None
     retry: int = 1  # Max attempts
+
+
+@dataclass
+class PriorityContext:
+    """Context passed to priority callback."""
+
+    work: WorkUnit
+    wait_time: float  # Seconds since created_at
+    queue_depth: int  # Total pending work count

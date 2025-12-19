@@ -97,7 +97,7 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 
 ## Current Status
 
-**Phase 6: Complete** — 76 tests passing
+**Phase 8: Complete** — 101 tests passing 🎉
 
 | Phase | Status | Tests |
 |-------|--------|-------|
@@ -108,7 +108,8 @@ Retry logic is highly use-case dependent (backoff strategy, jitter, circuit brea
 | Phase 4: Readiness | ✓ Complete | 5 |
 | Phase 5: Staleness | ✓ Complete | 8 |
 | Phase 6: Event Callbacks | ✓ Complete | 13 |
-| Phase 7: Priority | Pending | — |
+| Phase 7: Priority | ✓ Complete | 10 |
+| Phase 8: Polish | ✓ Complete | 15 |
 
 ---
 
@@ -950,7 +951,7 @@ async def test_on_start_called():
 
 ---
 
-## Phase 7: Priority Callback
+## Phase 7: Priority Callback ✓
 
 **Goal**: `@cue.priority` controls scheduling order.
 
@@ -966,9 +967,9 @@ class PriorityContext:
 
 ### Tasks
 
-- [ ] Provide context (work, wait_time, queue_depth)
-- [ ] Returns 0.0-1.0, higher runs first
-- [ ] Default: FIFO with starvation prevention
+- [x] Provide context (work, wait_time, queue_depth)
+- [x] Returns 0.0-1.0, higher runs first
+- [x] Default: FIFO with starvation prevention
 
 ### Tests
 
@@ -1029,17 +1030,17 @@ async def test_priority_context_has_wait_time():
 
 ---
 
-## Phase 8: Polish
+## Phase 8: Polish ✓
 
 **Goal**: Complete API, edge cases.
 
 ### Tasks
 
-- [ ] Comprehensive error messages
-- [ ] Edge case handling (empty queue, rapid start/stop)
-- [ ] Performance optimization
-- [ ] Documentation examples
-- [ ] Integration test with full pipeline
+- [x] Comprehensive error messages
+- [x] Edge case handling (empty queue, rapid start/stop)
+- [x] Performance optimization
+- [x] Documentation examples
+- [x] Integration test with full pipeline
 
 ### Integration Test
 
