@@ -1,4 +1,4 @@
-"""Phase 8: Polish - Integration tests and edge cases."""
+"""Integration tests and edge cases."""
 
 import asyncio
 

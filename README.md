@@ -634,6 +634,8 @@ Both strategies catch:
 
 ### Testing with runcue-sim
 
+![Example output](./docs/images/simulator.png)
+
 The simulator (`runcue-sim`) helps test your dependency patterns without real services:
 
 ```bash

@@ -1,4 +1,4 @@
-"""Phase 7: Priority Callback tests."""
+"""Tests for priority callback and work ordering."""
 
 import asyncio
 import time

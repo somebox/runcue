@@ -1,4 +1,4 @@
-"""Phase 2: Basic Execution tests."""
+"""Tests for basic work execution, error handling, and lifecycle."""
 
 import asyncio
 import time

@@ -1,4 +1,4 @@
-"""Phase 1: Data Models and Work Operations tests."""
+"""Tests for work operations: submit, get, list, cancel."""
 
 import pytest
 

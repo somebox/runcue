@@ -1,4 +1,4 @@
-"""Phase 0: Basic import and instantiation tests."""
+"""Tests for import, instantiation, and service/task/callback registration."""
 
 import runcue
 
@@ -142,3 +142,4 @@ def test_on_start_registration():
         pass
     
     assert cue._on_start_callback is on_start
+

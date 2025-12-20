@@ -1,4 +1,4 @@
-"""Phase 5: Staleness Callback tests."""
+"""Tests for is_stale callback and work skipping."""
 
 import asyncio
 

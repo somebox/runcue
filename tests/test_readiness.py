@@ -1,4 +1,4 @@
-"""Phase 4: Readiness Callback tests."""
+"""Tests for is_ready callback behavior."""
 
 import asyncio
 

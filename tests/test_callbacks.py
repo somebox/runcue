@@ -1,4 +1,4 @@
-"""Phase 6: Event Callbacks tests."""
+"""Tests for event callbacks: on_complete, on_failure, on_start."""
 
 import asyncio
 

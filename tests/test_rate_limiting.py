@@ -1,4 +1,4 @@
-"""Phase 3: Rate Limiting & Concurrency tests."""
+"""Tests for rate limiting and concurrency."""
 
 import asyncio
 import time
@@ -314,3 +314,4 @@ class TestTaskWithoutService:
 
         await asyncio.sleep(0.1)
         await cue.stop()
+
