@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>runcue - A Different Way to Think About Background Jobs</title>
+    <meta charset="utf-8">
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap');
+      
+      /* ===========================================
+         EASY-TO-ADJUST SETTINGS
+         =========================================== */
+      :root {
+        /* Body text */
+        --body-font-size: 1.3em;
+        --body-line-height: 1.7;
+        
+        /* Headers */
+        --h1-font-size: 3em;
+        --h2-font-size: 1.8em;
+        
+        /* Code blocks */
+        --code-font-size: 0.98em;
+        --code-line-height: 1.25;
+        --code-padding: 0.5em 0.7em;
+        
+        /* Inline code */
+        --inline-code-font-size: 0.85em;
+        
+        /* Tables */
+        --table-font-size: 0.9em;
+      }
+      /* =========================================== */
+      
+      body {
+        font-family: 'Inter', sans-serif;
+      }
+      
+      h1, h2, h3 {
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 700;
+        color: #1a1a2e;
+      }
+      
+      h1 {
+        font-size: var(--h1-font-size);
+        margin-bottom: 0.5em;
+      }
+      
+      h2 {
+        font-size: var(--h2-font-size);
+        border-bottom: 3px solid #e94560;
+        padding-bottom: 0.3em;
+        margin-bottom: 0.6em;
+      }
+      
+      .remark-code, .remark-inline-code {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: var(--code-font-size);
+      }
+      
+      .remark-inline-code {
+        background: #f0f0f5;
+        padding: 0.2em 0.4em;
+        border-radius: 4px;
+        color: #e94560;
+        font-size: var(--inline-code-font-size);
+      }
+      
+      .remark-code {
+        background: #1a1a2e !important;
+        border-radius: 8px;
+        padding: var(--code-padding);
+        line-height: var(--code-line-height);
+        color: #e0e0e0;
+      }
+      
+      .remark-slide-content pre {
+        background: #1a1a2e !important;
+        border-radius: 8px;
+        padding: var(--code-padding);
+      }
+      
+      .remark-slide-content pre code {
+        color: #e0e0e0;
+        background: transparent;
+      }
+      
+      .remark-slide-content {
+        background: linear-gradient(135deg, #fafafa 0%, #f0f0f5 100%);
+        padding: 1.2em 2.5em;
+        font-size: var(--body-font-size);
+      }
+      
+      .remark-slide-content.center.middle {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      }
+      
+      .remark-slide-content.center.middle h1,
+      .remark-slide-content.center.middle h2,
+      .remark-slide-content.center.middle p {
+        color: #ffffff;
+      }
+      
+      .remark-slide-content.center.middle h2 {
+        border-bottom-color: #e94560;
+      }
+      
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 0.6em 0;
+        font-size: var(--table-font-size);
+      }
+      
+      th, td {
+        border: 1px solid #ddd;
+        padding: 0.4em 0.8em;
+        text-align: left;
+      }
+      
+      th {
+        background: #1a1a2e;
+        color: white;
+        font-weight: 600;
+      }
+      
+      td {
+        color: #333;
+      }
+      
+      tr:nth-child(even) {
+        background: #f8f8fc;
+      }
+      
+      pre {
+        margin: 0.4em 0;
+      }
+      
+      code.hljs {
+        background: transparent;
+      }
+      
+      blockquote {
+        border-left: 4px solid #e94560;
+        margin: 0.8em 0;
+        padding: 0.4em 0.8em;
+        background: rgba(233, 69, 96, 0.08);
+        font-style: italic;
+      }
+      
+      ul, ol {
+        line-height: var(--body-line-height);
+        color: #333;
+        margin: 0.4em 0;
+      }
+      
+      li {
+        margin-bottom: 0.2em;
+        color: #333;
+      }
+      
+      p {
+        color: #333;
+        margin: 0.4em 0;
+      }
+      
+      strong {
+        color: #e94560;
+      }
+      
+      a {
+        color: #0f3460;
+        text-decoration: none;
+        border-bottom: 2px solid #e94560;
+      }
+      
+      a:hover {
+        color: #e94560;
+      }
+      
+      .remark-slide-number {
+        font-size: 0.7em;
+        color: #888;
+      }
+      
+      /* Syntax highlighting overrides */
+      .hljs-keyword,
+      .hljs-selector-tag,
+      .hljs-literal,
+      .hljs-section,
+      .hljs-link {
+        color: #e94560;
+      }
+      
+      .hljs-string,
+      .hljs-title,
+      .hljs-name,
+      .hljs-type,
+      .hljs-attribute,
+      .hljs-symbol,
+      .hljs-bullet,
+      .hljs-addition,
+      .hljs-variable,
+      .hljs-template-tag,
+      .hljs-template-variable {
+        color: #4ecca3;
+      }
+      
+      .hljs-comment,
+      .hljs-quote,
+      .hljs-deletion,
+      .hljs-meta {
+        color: #6c757d;
+      }
+      
+      .hljs-number {
+        color: #ffc93c;
+      }
+      
+      pre code {
+        line-height: var(--code-line-height);
+      }
+      
+      /* Logo on title slide */
+      .remark-slide-content img[alt="runcue logo"] {
+        max-width: 400px;
+        margin-bottom: 0.5em;
+      }
+      
+      /* Simulator screenshot */
+      .remark-slide-content img[alt="runcue simulator"] {
+        max-width: 700px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      }
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+![runcue logo](images/runcue-logo.png)
+
+## A Different Way to Think About Background Jobs
+
+---
+
+class: center, middle
+
+# The Problem
+
+---
+
+## What We're Solving
+
+When building applications that call APIs, process data, or run commands:
+
+| Challenge | Pain |
+|-----------|------|
+| **Rate limits** | "429 Too Many Requests" |
+| **Concurrency** | Only N things can run at once |
+| **Dependencies** | Step B needs output from Step A |
+| **Crash recovery** | Where were we? |
+| **Partial re-runs** | "Just redo pages 5-10" |
+
+---
+
+## The Traditional Approach
+
+| Component | Examples |
+|-----------|----------|
+| Message broker | Redis, RabbitMQ |
+| Task queue | Celery, Sidekiq, Bull |
+| Result backend | Redis, PostgreSQL |
+| Monitoring | Flower, custom dashboards |
+
+**Flow:** `Redis → Celery → Workers → Result Backend`
+
+All must be running, configured, and monitored.
+
+---
+
+## Traditional: Task Dependencies
+
+```python
+from celery import chain
+
+result = chain(
+    extract_text.s(page_id),
+    transform_data.s(),
+    summarize.s()
+)()
+```
+
+**The mental model:** "Task B depends on Task A completing"
+
+What if:
+- Task A completed but produced bad output?
+- You need to re-run just Task B?
+- Task A's output became stale?
+
+---
+
+## Traditional: The Complexity
+
+```python
+# settings.py - just a sample of required config
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_TASK_TIME_LIMIT = 30 * 60
+# ... 10+ more settings
+
+# Rate limiting is per-worker, not global
+@app.task(rate_limit='10/m')
+def call_api(data): ...
+```
+
+Plus: `docker run redis`, `celery worker`, `celery beat`, `celery flower`...
+
+---
+
+class: center, middle
+
+# runcue
+
+## A Simpler Model
+
+---
+
+## The runcue Philosophy
+
+| Traditional | runcue |
+|-------------|--------|
+| "Task B depends on Task A **completing**" | "Task B is ready when its **inputs are valid**" |
+
+**Key insight:** Artifacts are the source of truth, not task completion.
+
+**Your Application provides:**
+- `is_ready(work)` → "Can this run? Are inputs valid?"
+- `is_stale(work)` → "Should this run? Output missing?"
+- Task handlers → "Here's how to do the work"
+
+**runcue provides:** Queue → Check Readiness → Respect Limits → Execute
+
+---
+
+## The Mental Model Shift
+
+```text
+TRADITIONAL                           RUNCUE
+═══════════                           ══════
+
+    Task A ────► Task B               Work A        Work B
+       │                                 │             │
+       │  "completed"                    ▼             ▼
+       └────────────►             ┌──────────┐   ┌──────────┐
+                                  │ Artifact │   │ Artifact │
+  Dependency:                     │    A     │   │    B     │
+  "B waits for                    └────┬─────┘   └────┬─────┘
+   A to complete"                      │   checks     │  checks
+                                       ▼              ▼
+                                  ┌────────────────────────┐
+                                  │       is_ready()       │
+                                  │  "Does input exist?"   │
+                                  └────────────────────────┘
+```
+
+*Traditional queues chain tasks. runcue checks artifacts.*
+
+---
+
+## What runcue Is
+
+**An embedded coordinator for rate-limited work**
+
+- ✅ Runs in your process (no external services)
+- ✅ Fully in-memory (no Redis, no database)
+- ✅ Stateless (your artifacts are the truth)
+- ✅ Lightweight (just Python)
+
+```python
+cue = runcue.Cue()
+cue.service("openai", rate="60/min", concurrent=5)
+
+@cue.task("extract_text", uses="openai")
+def extract_text(work):
+    text = call_openai(work.params["image"])
+    Path(work.params["output"]).write_text(text)
+```
+
+---
+
+## The Two Questions
+
+| Question | Callback | Purpose |
+|----------|----------|---------|
+| "Can this start?" | `is_ready` | Check if inputs exist/valid |
+| "Should this run?" | `is_stale` | Check if output missing |
+
+```python
+@cue.is_ready
+def is_ready(work) -> bool:
+    if work.task == "summarize":
+        return Path(work.params["text_path"]).exists()
+    return True
+
+@cue.is_stale  
+def is_stale(work) -> bool:
+    if work.task == "extract_text":
+        return not Path(work.params["image"].replace(".png", ".txt")).exists()
+    return True
+```
+
+---
+
+## Services: Rate Limit Buckets
+
+Services don't execute anything—they're buckets that track usage:
+
+```python
+cue.service("openai", rate="60/min", concurrent=5)  # 60/min, 5 parallel
+cue.service("local", concurrent=4)                   # No rate limit, 4 parallel
+cue.service("knife", concurrent=1)                   # Serial access only
+cue.service("email", rate="100/hour")                # Rate limited
+```
+
+runcue ensures limits aren't exceeded before calling your handlers.
+
+---
+
+## How Services Work
+
+```text
+  Work Queue                     Service Buckets
+  ══════════                     ═══════════════
+
+ ┌──────────┐
+ │ work_1   │──┐     ┌────────────────────────────────────┐
+ │ openai   │  │     │ openai: rate="60/min" concurrent=5 │
+ ├──────────┤  │     │   ████░░░░  3/5 active             │
+ │ work_2   │──┼────►│   ▓▓▓▓▓▓▓▓  45/60 this minute      │
+ │ openai   │  │     │   → work_4 must WAIT               │
+ ├──────────┤  │     └────────────────────────────────────┘
+ │ work_3   │──┘
+ │ openai   │
+ ├──────────┤
+ │ work_4   │─ ─ ─ ─ BLOCKED (bucket full)
+ ├──────────┤        ┌────────────────────────────────────┐
+ │ work_5   │───────►│ local: concurrent=4 (no rate)      │
+ │ local    │        │   ██░░░░░░  2/4 active             │
+ └──────────┘        └────────────────────────────────────┘
+```
+
+*Services are buckets that track usage, not workers that execute.*
+
+---
+
+class: center, middle
+
+# Power in Practice
+
+---
+
+## Example: PDF Processing
+
+```python
+cue = runcue.Cue()
+cue.service("local", concurrent=4)
+cue.service("openai", rate="60/min", concurrent=5)
+
+@cue.task("split_pdf", uses="local")
+def split_pdf(work):
+    pages = pdf_to_images(work.params["pdf_path"])
+    for i, page in enumerate(pages):
+        page.save(f"work/{work.params['job_id']}/pages/{i:03d}.png")
+
+@cue.task("extract_text", uses="openai")
+def extract_text(work):
+    text = call_openai_vision(work.params["page_path"])
+    Path(work.params["page_path"].replace(".png", ".txt")).write_text(text)
+```
+
+---
+
+## Readiness & Staleness in Action
+
+```python
+@cue.is_ready
+def is_ready(work):
+    if work.task == "extract_text":
+        return Path(work.params["page_path"]).exists()
+    return True
+
+@cue.is_stale
+def is_stale(work):
+    if work.task == "extract_text":
+        return not Path(work.params["page_path"].replace(".png", ".txt")).exists()
+    return True
+```
+
+**Re-process just pages 5-10:**
+```python
+for i in range(5, 11):
+    await cue.submit("extract_text", params={"page_path": f"pages/{i:03d}.png"})
+# Pages exist → runs immediately. No need to re-split!
+```
+
+---
+
+## The Artifact Pattern
+
+Every task is a **producer** and often a **consumer**:
+
+`split_pdf` → pages → `extract_text` → text → `summarize`
+
+**Define validation once, use everywhere:**
+
+```python
+def text_is_valid(path: str) -> bool:
+    p = Path(path)
+    if not p.exists():
+        return False
+    return (time.time() - p.stat().st_mtime) < 86400  # Fresh if < 24h
+
+# Use in is_ready (consumer) and is_stale (producer)
+```
+
+---
+
+## Artifacts Connect Everything
+
+```text
+ PRODUCER                   ARTIFACT                   CONSUMER
+ ════════                   ════════                   ════════
+
+┌───────────┐           ┌─────────────┐           ┌───────────┐
+│ split_pdf │──creates─►│ page_001.   │◄──needs───│ extract_  │
+│           │           │    png      │           │   text    │
+└───────────┘           └─────────────┘           └───────────┘
+      │                       │                         │
+      ▼                       ▼                         ▼
+  is_stale:              The artifact              is_ready:
+  "Does PNG              exists on disk,           "Does page
+   exist?"               S3, database...            PNG exist?"
+      │                                                 │
+      ▼                  ┌─────────────┐                ▼
+  FALSE → Skip           │   RUNCUE    │           TRUE → Run
+  TRUE  → Run            │ never sees  │           FALSE → Wait
+                         │ the artifact│
+                         └─────────────┘
+```
+
+*runcue doesn't store artifacts. Your callbacks check them.*
+
+---
+
+## Side Effects Need Proof
+
+For tasks with side effects (email, payments), create proof artifacts:
+
+```python
+@cue.task("send_notification", uses="email")
+def send_notification(work):
+    proof_path = f"proof/{work.params['order_id']}/notification.json"
+    
+    if Path(proof_path).exists():  # Idempotent: check proof first
+        return json.loads(Path(proof_path).read_text())
+    
+    result = send_email(to=work.params["email"], subject="Order shipped")
+    Path(proof_path).write_text(json.dumps({
+        "sent_at": time.time(), "message_id": result.message_id
+    }))
+```
+
+**Resubmitting won't send duplicate emails.**
+
+---
+
+## Callbacks for Observability
+
+```python
+@cue.on_complete
+def on_complete(work, result, duration):
+    logging.info(f"{work.task} completed in {duration:.2f}s")
+    my_metrics.histogram("task_duration", duration)
+
+@cue.on_failure
+def on_failure(work, error):
+    slack.post(f"Failed: {work.task} - {error}")
+
+@cue.on_skip
+def on_skip(work):
+    logging.debug(f"Skipped {work.task} - already done")
+```
+
+runcue doesn't store history—you do, however you want.
+
+---
+
+class: center, middle
+
+# The Comparison
+
+---
+
+## Scenario: Re-run One Step
+
+| Approach | What Happens |
+|----------|--------------|
+| **Traditional** | Re-run entire chain, or complex skip logic |
+| **runcue** | Just submit it. If inputs exist, it runs. |
+
+```python
+# Traditional (Celery): manual check
+@app.task
+def extract_text(page_id):
+    if os.path.exists(get_output_path(page_id)):
+        return {"skipped": True}
+    # ... actual work
+
+# runcue: natural
+await cue.submit("extract_text", params={"page_path": "page5.png"})
+```
+
+---
+
+## Scenario: Inputs Go Stale
+
+| Approach | What Happens |
+|----------|--------------|
+| **Traditional** | Manual intervention required |
+| **runcue** | `is_ready` blocks downstream, `is_stale` triggers upstream |
+
+```python
+@cue.is_ready
+def is_ready(work):
+    if work.task == "make_pie":
+        return slices_are_fresh(work.params["job_id"])
+    return True
+
+@cue.is_stale
+def is_stale(work):
+    if work.task == "slice_apples":
+        return not slices_are_fresh(work.params["job_id"])
+    return True
+```
+
+---
+
+## Scenario: Crash Recovery
+
+| Approach | What Happens |
+|----------|--------------|
+| **Traditional** | Check broker state, replay from checkpoint |
+| **runcue** | Resubmit everything. `is_stale` skips what's done. |
+
+```python
+cue.start()
+for doc in documents:
+    await cue.submit("process", params={"path": doc})
+
+# is_stale checks each artifact:
+# - Output exists and fresh? Skip
+# - Output missing or stale? Run
+```
+
+**No checkpoint files. No "where were we?" logic.**
+
+---
+
+## Setup Comparison
+
+**Traditional (Celery + Redis):**
+```bash
+pip install celery redis
+docker run -d -p 6379:6379 redis
+# Configure settings.py (15+ lines)
+celery -A myapp worker
+celery -A myapp beat
+celery -A myapp flower
+```
+
+**runcue:**
+```bash
+pip install runcue
+```
+```python
+cue = runcue.Cue()
+cue.service("api", rate="60/min", concurrent=5)
+cue.start()
+```
+
+---
+
+## When to Use What
+
+**Use runcue when:**
+- CLI tools and batch processors
+- Scripts coordinating multiple APIs
+- Local applications with subprocesses
+- You want artifact-based dependencies
+
+**Use traditional queues when:**
+- Distributed systems (work across machines)
+- Durable queues (must survive restart)
+- Very high throughput (>10k tasks/minute)
+
+---
+
+class: center, middle
+
+# Summary
+
+---
+
+## The runcue Philosophy
+
+1. **Artifacts are proof** — Every task produces verifiable evidence
+2. **Validation is centralized** — Define once, use in `is_ready` and `is_stale`
+3. **runcue is stateless** — It asks "ready?" and "stale?"—you answer
+4. **You own your data** — History, metrics, caching via callbacks
+
+---
+
+## Key Takeaways
+
+| Traditional | runcue |
+|-------------|--------|
+| Task chains based on completion | Dependencies based on artifact validity |
+| External broker required | Embedded, in-memory |
+| Persistence in broker | Artifacts are the truth |
+| Rate limiting per-worker | Global rate limiting |
+| Complex retry configuration | You decide via callbacks |
+| Setup: broker + workers + monitoring | `pip install runcue` |
+
+---
+
+class: center, middle
+
+# Questions?
+
+**GitHub:** github.com/somebox/runcue
+
+```bash
+pip install runcue
+```
+
+---
+
+## Bonus: Quick Start
+
+```python
+import runcue
+from pathlib import Path
+
+cue = runcue.Cue()
+cue.service("api", rate="60/min", concurrent=5)
+
+@cue.task("process", uses="api")
+def process(work):
+    output = do_work(work.params["input"])
+    Path(work.params["output"]).write_text(output)
+
+@cue.is_ready
+def is_ready(work):
+    return Path(work.params["input"]).exists()
+
+@cue.is_stale
+def is_stale(work):
+    return not Path(work.params["output"]).exists()
+```
+
+---
+
+## Test with runcue-sim
+
+![runcue simulator](images/simulator.png)
+
+```bash
+runcue-sim --scenario pipeline --count 100 --latency 1000
+```
+
+*Interactive simulator for testing scenarios without real services.*
+
+    </textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>
+      var slideshow = remark.create({
+        ratio: '16:9',
+        highlightStyle: 'monokai',
+        highlightLines: true,
+        countIncrementalSlides: false,
+        navigation: {
+          scroll: false,
+          touch: true,
+          click: false
+        }
+      });
+    </script>
+  </body>
+</html>
