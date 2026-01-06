@@ -4,7 +4,7 @@
 
 ![runcue logo](./docs/images/runcue-logo-sm.png)
 
-A Python library for coordinating work across rate-limited services. Define your tasks, tell runcue when they're ready to run, and let it handle the scheduling and throttling.
+A Python library that makes it easy to run background requests with dependencies across rate-limited services, without any extra infrastructure or separate job queues. Define your tasks, tell runcue when they're ready to run, and let it handle the scheduling and throttling. 
 
 ## The Idea
 
