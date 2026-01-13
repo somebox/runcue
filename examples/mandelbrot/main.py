@@ -182,7 +182,7 @@ Examples:
     parser.add_argument("--grid", type=int, default=4, help="Grid size for tiles (default: 4)")
     parser.add_argument("--workers", type=int, default=4, help="Max parallel workers (default: 4)")
     parser.add_argument("--zoom", type=str, default=None, help="Zoom: center_x,center_y,scale (e.g., -0.75,0.1,0.01)")
-    parser.add_argument("--colormap", type=str, default="fire", 
+    parser.add_argument("--colormap", type=str, default="plasma", 
                         help="Colormap: fire, ocean, neon, electric, plasma, grayscale, or matplotlib name")
     parser.add_argument("--animate", action="store_true",
                         help="Output animated GIF showing tiles appearing in completion order")
@@ -276,8 +276,8 @@ def create_animated_gif(config: FractalConfig, tile_order: list, start_time: flo
     frames = []
     tiles_shown = set()
     
-    # Background color (black)
-    bg_color = (50, 50, 50)
+    # Background color from config
+    bg_color = config.bg_color
     
     # Load all tiles into memory
     tile_images = {}
