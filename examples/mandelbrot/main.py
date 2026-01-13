@@ -16,6 +16,8 @@ Usage:
     python main.py --size 4096 --iter 512    # Higher resolution
     python main.py --grid 8 --workers 8      # 8x8 tiles, 8 parallel workers
     python main.py --zoom -0.75,0.1,0.01     # Zoom into specific region
+    python main.py --animate                 # Output animated GIF showing tile completion
+    python main.py --animate --tiles-per-frame 2  # 2 tiles appear per frame
 """
 
 import argparse
@@ -49,7 +51,13 @@ class FractalConfig:
     zoom: float = 1.5             # Zoom level (smaller = more zoomed in)
     
     # Color settings
-    colormap: str = "fire"        # Built-in: fire, ocean, neon, electric, plasma, grayscale
+    colormap: str = "plasma"        # Built-in: fire, ocean, neon, electric, plasma, grayscale
+    
+    # Animation settings
+    animate: bool = False         # Output animated GIF instead of static image
+    tiles_per_frame: int = 1      # Number of tiles to add per frame (1-3)
+    frame_delay: int = 1000       # Delay between frames in milliseconds
+    bg_color: tuple = (0, 0, 0)   # Background color for animation (RGB tuple)
     
     @property
     def tile_size(self) -> int:
@@ -176,8 +184,18 @@ Examples:
     parser.add_argument("--zoom", type=str, default=None, help="Zoom: center_x,center_y,scale (e.g., -0.75,0.1,0.01)")
     parser.add_argument("--colormap", type=str, default="fire", 
                         help="Colormap: fire, ocean, neon, electric, plasma, grayscale, or matplotlib name")
+    parser.add_argument("--animate", action="store_true",
+                        help="Output animated GIF showing tiles appearing in completion order")
+    parser.add_argument("--tiles-per-frame", type=int, default=1,
+                        help="Number of tiles to add per animation frame (1-3, default: 1)")
+    parser.add_argument("--frame-delay", type=int, default=1000,
+                        help="Delay between animation frames in milliseconds (default: 1000)")
     
     args = parser.parse_args()
+    
+    # Validate tiles-per-frame
+    if args.tiles_per_frame < 1 or args.tiles_per_frame > 3:
+        parser.error("--tiles-per-frame must be between 1 and 3")
     
     # Build config
     config = FractalConfig(
@@ -186,6 +204,9 @@ Examples:
         grid=args.grid,
         workers=args.workers,
         colormap=args.colormap,
+        animate=args.animate,
+        tiles_per_frame=args.tiles_per_frame,
+        frame_delay=args.frame_delay,
     )
     
     # Parse zoom if provided
@@ -221,6 +242,90 @@ class WorkerPool:
             self._available.add(worker_id)
 
 
+def create_static_image(config: FractalConfig, start_time: float) -> dict:
+    """Stitch tiles into a single static PNG image."""
+    print("  Stitching tiles...", flush=True)
+    
+    # Create output image
+    final = Image.new("RGB", (config.size, config.size))
+    
+    # Paste each tile
+    for row in range(config.grid):
+        for col in range(config.grid):
+            tile_path = OUTPUT_DIR / f"tile_{row}_{col}.png"
+            tile = Image.open(tile_path)
+            
+            x = col * config.tile_size
+            y = row * config.tile_size
+            final.paste(tile, (x, y))
+    
+    # Save final image
+    output_path = OUTPUT_DIR / "mandelbrot.png"
+    final.save(output_path, "PNG")
+    
+    elapsed = time.time() - start_time
+    print(f"  ✓ Saved: {output_path} ({elapsed:.1f}s total)", flush=True)
+    
+    return {"path": str(output_path)}
+
+
+def create_animated_gif(config: FractalConfig, tile_order: list, start_time: float) -> dict:
+    """Create animated GIF showing tiles appearing in completion order."""
+    print("  Creating animated GIF...", flush=True)
+    
+    frames = []
+    tiles_shown = set()
+    
+    # Background color (black)
+    bg_color = (50, 50, 50)
+    
+    # Load all tiles into memory
+    tile_images = {}
+    for row in range(config.grid):
+        for col in range(config.grid):
+            tile_path = OUTPUT_DIR / f"tile_{row}_{col}.png"
+            tile_images[(row, col)] = Image.open(tile_path)
+    
+    # Create frames, adding tiles_per_frame tiles at a time
+    for i in range(0, len(tile_order), config.tiles_per_frame):
+        # Add next batch of tiles
+        batch = tile_order[i:i + config.tiles_per_frame]
+        for tile_coords in batch:
+            tiles_shown.add(tile_coords)
+        
+        # Create frame with all tiles shown so far
+        frame = Image.new("RGB", (config.size, config.size), bg_color)
+        for row, col in tiles_shown:
+            tile = tile_images[(row, col)]
+            x = col * config.tile_size
+            y = row * config.tile_size
+            frame.paste(tile, (x, y))
+        
+        frames.append(frame)
+    
+    # Add final frame with longer duration (hold the complete image)
+    if frames:
+        frames.append(frames[-1].copy())
+    
+    # Save animated GIF
+    output_path = OUTPUT_DIR / "mandelbrot.gif"
+    if frames:
+        # Duration is in milliseconds for PIL
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=config.frame_delay,
+            loop=0,  # Loop forever
+        )
+    
+    elapsed = time.time() - start_time
+    num_frames = len(frames)
+    print(f"  ✓ Saved: {output_path} ({num_frames} frames, {elapsed:.1f}s total)", flush=True)
+    
+    return {"path": str(output_path)}
+
+
 def run_fractal(config: FractalConfig):
     """Generate fractal using runcue for parallel tile computation."""
     
@@ -235,6 +340,7 @@ def run_fractal(config: FractalConfig):
     # Track progress
     tiles_completed = [0]
     tiles_failed = set()  # Track which tiles failed
+    tile_completion_order = []  # Track order tiles complete for animation
     total_tiles = config.grid * config.grid
     start_time = [0.0]
     workers = WorkerPool(config.workers)
@@ -274,6 +380,7 @@ def run_fractal(config: FractalConfig):
             with progress_lock:
                 tiles_completed[0] += 1
                 count = tiles_completed[0]
+                tile_completion_order.append((row, col))
             elapsed = time.time() - start_time[0]
             pct = count / total_tiles * 100
             print(f"  [{count:2d}/{total_tiles}] W{worker_id} → Tile ({row},{col}) done - {pct:.0f}% ({elapsed:.1f}s)", flush=True)
@@ -285,30 +392,12 @@ def run_fractal(config: FractalConfig):
     # --- Task: Stitch tiles together ---
     @cue.task("stitch_tiles", uses="local")
     def stitch_tiles(work):
-        """Combine all tiles into final image."""
-        print("  Stitching tiles...", flush=True)
+        """Combine all tiles into final image (static or animated)."""
         
-        # Create output image
-        final = Image.new("RGB", (config.size, config.size))
-        
-        # Paste each tile
-        for row in range(config.grid):
-            for col in range(config.grid):
-                tile_path = OUTPUT_DIR / f"tile_{row}_{col}.png"
-                tile = Image.open(tile_path)
-                
-                x = col * config.tile_size
-                y = row * config.tile_size
-                final.paste(tile, (x, y))
-        
-        # Save final image
-        output_path = OUTPUT_DIR / "mandelbrot.png"
-        final.save(output_path, "PNG")
-        
-        elapsed = time.time() - start_time[0]
-        print(f"  ✓ Saved: {output_path} ({elapsed:.1f}s total)", flush=True)
-        
-        return {"path": str(output_path)}
+        if config.animate:
+            return create_animated_gif(config, tile_completion_order, start_time[0])
+        else:
+            return create_static_image(config, start_time[0])
     
     # --- is_ready: Stitch needs all tiles ---
     @cue.is_ready
@@ -329,6 +418,8 @@ def run_fractal(config: FractalConfig):
             col = work.params["col"]
             return not (OUTPUT_DIR / f"tile_{row}_{col}.png").exists()
         if work.task == "stitch_tiles":
+            if config.animate:
+                return not (OUTPUT_DIR / "mandelbrot.gif").exists()
             return not (OUTPUT_DIR / "mandelbrot.png").exists()
         return True
     
@@ -346,6 +437,8 @@ def run_fractal(config: FractalConfig):
         print(f"   Size: {config.size}×{config.size}, Iterations: {config.iterations}")
         print(f"   Grid: {config.grid}×{config.grid} ({total_tiles} tiles), Workers: {config.workers}")
         print(f"   Region: x=[{config.x_min:.4f}, {config.x_max:.4f}], y=[{config.y_min:.4f}, {config.y_max:.4f}]")
+        if config.animate:
+            print(f"   Animation: {config.tiles_per_frame} tile(s)/frame, {config.frame_delay}ms delay")
         print()
         
         # Clean previous run
@@ -393,7 +486,8 @@ def run_fractal(config: FractalConfig):
             print(f"\n✗ Completed with {len(failed)} failure(s)")
             return
         
-        print(f"\n✓ Done! Open {OUTPUT_DIR / 'mandelbrot.png'}")
+        output_file = "mandelbrot.gif" if config.animate else "mandelbrot.png"
+        print(f"\n✓ Done! Open {OUTPUT_DIR / output_file}")
     
     asyncio.run(run())
 

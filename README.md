@@ -4,17 +4,20 @@
 
 ![runcue logo](./docs/images/runcue-logo-sm.png)
 
-A Python library that makes it easy to run background requests with dependencies across rate-limited services, without any extra infrastructure or separate job queues. Define your tasks, tell runcue when they're ready to run, and let it handle the scheduling and throttling. 
+> Run interdependent background tasks in parallel from Python without all the infrastructure overhead.
+
+A Python library that makes it easy to run background requests with dependencies across rate-limited services, without any extra infrastructure or separate job queues. Define your tasks, tell runcue when they're ready to run, and let it handle the scheduling and throttling. Dependencies are handled via artifacts, not task completion - this makes it more like a Makefile than a task queue - and therefore easier to build and scale.
 
 ## The Idea
 
-When you're building applications that call external APIs, run shell commands, or process data through multiple steps, you face common challenges:
+When you're building applications that call external APIs, run shell commands, or process data through multiple steps, there's a lot to juggle:
 
 - **Rate limits**: APIs only allow N requests per minute
 - **Concurrency**: You can only run M things at once
 - **Dependencies**: Step B needs the output from Step A
+- **State management**: to know when a task is done and when to re-run it
 
-runcue handles the **when**. You handle the **what**.
+runcue simplifies this: it handles the **when**. You handle the **what**. Here's the mental model:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐

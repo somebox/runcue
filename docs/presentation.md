@@ -127,7 +127,7 @@ Traditional:  "Task B depends on Task A completing"
 runcue:       "Task B is ready when its inputs are valid"
 ```
 
-**Key insight:** Artifacts are the source of truth, not task completion.
+**Artifacts are the source of truth, not task completion.**
 
 ```
 ┌─────────────────────────────────────────────────────────┐

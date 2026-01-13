@@ -47,6 +47,10 @@ python main.py --zoom=-0.75,0.1,0.01
 # Different colormap (built-in: fire, ocean, neon, electric, plasma, grayscale)
 python main.py --colormap fire
 python main.py --colormap neon
+
+# animated gif of a nice area
+uv run python main.py --zoom=-0.78,0.13,0.005 --animate --grid 5 --tiles-per-frame 2 --colormap viridis --frame-delay 100 --size 1024
+
 ```
 
 ## Options
