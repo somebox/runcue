@@ -7,7 +7,7 @@ name = "runcue"
 version = "0.1.0"
 description = "A Python library for coordinating work across rate-limited services"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9,<3.13"
 license = "MIT"
 keywords = ["queue", "orchestration", "rate-limit", "async", "task"]
 classifiers = [
@@ -15,6 +15,8 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Framework :: AsyncIO",
@@ -46,7 +48,7 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
