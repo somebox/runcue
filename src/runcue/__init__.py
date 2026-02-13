@@ -3,5 +3,5 @@
 from runcue.cue import Cue
 from runcue.models import PriorityContext, TaskType, WorkState, WorkUnit
 
-__version__ = "0.2.0"
+__version__ = "0.3"
 __all__ = ["Cue", "WorkUnit", "WorkState", "TaskType", "PriorityContext"]
