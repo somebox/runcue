@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runcue"
-version = "0.3"
+version = "0.3.0"
 description = "A Python library for coordinating work across rate-limited services"
 readme = "README.md"
 requires-python = ">=3.9,<3.14"
