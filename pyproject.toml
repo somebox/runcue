@@ -7,7 +7,7 @@ name = "runcue"
 version = "0.3.0"
 description = "A Python library for coordinating work across rate-limited services"
 readme = "README.md"
-requires-python = ">=3.9,<3.14"
+requires-python = ">=3.9,<3.15"
 license = "MIT"
 keywords = ["queue", "orchestration", "rate-limit", "async", "task"]
 classifiers = [
