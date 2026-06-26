@@ -47,8 +47,12 @@ and generates a markdown report.
 # Install dependencies
 pip install runcue httpx pillow
 
+# Or using uv:
+uv pip install runcue httpx pillow
+
 # Run
 python main.py
+# Or: uv run main.py
 ```
 
 ## Output

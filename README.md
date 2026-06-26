@@ -275,6 +275,43 @@ This lets you:
 - Build dashboards
 - Cache artifact status for faster `is_ready` checks
 
+## Running Examples
+
+The `examples/` directory contains runnable scripts demonstrating runcue patterns:
+
+- **dog_collage**: Fetches random dog images and creates a collage
+- **mandelbrot**: Generates fractals using parallel tile computation
+- **space_news**: Fetches space news and generates a dashboard report
+
+Each example has its own README with detailed instructions. To run them:
+
+```bash
+# Navigate to an example directory
+cd examples/dog_collage
+
+# Install dependencies (runcue + example-specific packages)
+# Using pip:
+pip install runcue httpx pillow
+
+# Or using uv (note: use 'uv pip install', not 'uv run pip install'):
+uv pip install runcue httpx pillow
+
+# Run the example
+python main.py
+# Or with uv (requires packages installed first):
+uv run main.py
+```
+
+**Dependencies by example:**
+
+| Example | Required packages |
+|---------|------------------|
+| `dog_collage` | `runcue`, `httpx`, `pillow` |
+| `mandelbrot` | `runcue`, `pillow`, `numpy` (optional: `matplotlib` for custom colormaps) |
+| `space_news` | `runcue`, `httpx`, `pillow` |
+
+Each example's README includes installation instructions and usage details.
+
 ## Examples
 
 ### Example 1: Apple Pie Factory

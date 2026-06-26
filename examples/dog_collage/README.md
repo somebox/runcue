@@ -31,8 +31,12 @@ fetch_url (×9)  →  download_image (×9)  →  create_collage (×1)
 # Install dependencies
 pip install runcue httpx pillow
 
+# Or using uv:
+uv pip install runcue httpx pillow
+
 # Run
 python main.py
+# Or: uv run main.py
 ```
 
 ## Output

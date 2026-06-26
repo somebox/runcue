@@ -32,8 +32,12 @@ compute_tile (3,3)  ──┘
 # Install dependencies
 pip install runcue pillow numpy matplotlib
 
+# Or using uv:
+uv pip install runcue pillow numpy matplotlib
+
 # Default: 2048×2048, 256 iterations, 4×4 grid
 python main.py
+# Or: uv run main.py
 
 # High resolution
 python main.py --size 4096 --iter 512
